@@ -85,14 +85,19 @@ class CQLPolicy(SACPolicy):
         return q1 - log_prob1, q2 - log_prob2
 
     def learn(self, batch: Dict) -> Dict[str, float]:
+        """function called in every training iteration
+        
+        Args:
+            batch (Dict): batch of data sampled from buffer (dataset)
+        """
         obss, actions, next_obss, rewards, terminals = batch["observations"], batch["actions"], \
             batch["next_observations"], batch["rewards"], batch["terminals"]
         batch_size = obss.shape[0]
         
         # update actor
-        a, log_probs = self.actforward(obss)
-        q1a, q2a = self.critic1(obss, a), self.critic2(obss, a)
-        actor_loss = (self._alpha * log_probs - torch.min(q1a, q2a)).mean()
+        a, log_probs = self.actforward(obss) # sample actions and get log_probs from actor
+        q1a, q2a = self.critic1(obss, a), self.critic2(obss, a) # get Q_1(s,a) and Q_2(s,a)
+        actor_loss = (self._alpha * log_probs - torch.min(q1a, q2a)).mean() # compute actor loss
         self.actor_optim.zero_grad()
         actor_loss.backward()
         self.actor_optim.step()
