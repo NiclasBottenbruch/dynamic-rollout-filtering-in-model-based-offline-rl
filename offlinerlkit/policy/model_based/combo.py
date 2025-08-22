@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import gym
+from tqdm import tqdm
 
 from torch.nn import functional as F
 from typing import Dict, Union, Tuple
@@ -25,6 +26,7 @@ class COMBOPolicy(CQLPolicy):
         critic1_optim: torch.optim.Optimizer,
         critic2_optim: torch.optim.Optimizer,
         action_space: gym.spaces.Space,
+
         tau: float = 0.005,
         gamma: float  = 0.99,
         alpha: Union[float, Tuple[float, torch.Tensor, torch.optim.Optimizer]] = 0.2,
@@ -69,6 +71,15 @@ class COMBOPolicy(CQLPolicy):
         init_obss: np.ndarray,
         rollout_length: int
     ) -> Tuple[Dict[str, np.ndarray], Dict]:
+        """
+        Rollout the dynamics model for a given number of steps.
+
+        Args:
+            init_obss (np.ndarray): The initial observations to rollout from.
+            rollout_length (int): The number of steps to rollout the dynamics model.
+        Returns:
+            Tuple[Dict[str, np.ndarray], Dict]: A tuple containing the rollout transitions and the rollout statistics.
+        """
 
         num_transitions = 0
         rewards_arr = np.array([])
@@ -77,14 +88,14 @@ class COMBOPolicy(CQLPolicy):
         # rollout
         observations = init_obss
         for _ in range(rollout_length):
-            if self._uniform_rollout:
+            if self._uniform_rollout: # use uniform random actions (random rollout policy)
                 actions = np.random.uniform(
                     self.action_space.low[0],
                     self.action_space.high[0],
                     size=(len(observations), self.action_space.shape[0])
                 )
             else:
-                actions = self.select_action(observations)
+                actions = self.select_action(observations) # chooses action based on self.actor policy. select_action method is inherited from SACPolicy
             next_observations, rewards, terminals, info = self.dynamics.step(observations, actions)
             rollout_transitions["obss"].append(observations)
             rollout_transitions["next_obss"].append(next_observations)
@@ -95,7 +106,7 @@ class COMBOPolicy(CQLPolicy):
             num_transitions += len(observations)
             rewards_arr = np.append(rewards_arr, rewards.flatten())
 
-            nonterm_mask = (~terminals).flatten()
+            nonterm_mask = (~terminals).flatten() # mask for non-terminated trajectories
             if nonterm_mask.sum() == 0:
                 break
 
@@ -108,6 +119,14 @@ class COMBOPolicy(CQLPolicy):
             {"num_transitions": num_transitions, "reward_mean": rewards_arr.mean()}
     
     def learn(self, batch: Dict) -> Dict[str, float]:
+        """
+        Training the actor and crirics conservatively from the given batch consisting of real and fake transitions.
+
+        Args:
+            batch (Dict): A dictionary containing real and fake transitions.
+        
+        """
+
         real_batch, fake_batch = batch["real"], batch["fake"]
         mix_batch = {k: torch.cat([real_batch[k], fake_batch[k]], 0) for k in real_batch.keys()}
 
@@ -190,7 +209,7 @@ class COMBOPolicy(CQLPolicy):
         # cat_q shape: (batch_size, 3 * num_repeat, 1)
         cat_q1 = torch.cat([obs_pi_value1, next_obs_pi_value1, random_value1], 1)
         cat_q2 = torch.cat([obs_pi_value2, next_obs_pi_value2, random_value2], 1)
-        # Samples from the original dataset
+        # Samples from the original (real) dataset
         real_obss, real_actions = real_batch['observations'], real_batch['actions']
         q1, q2 = self.critic1(real_obss, real_actions), self.critic2(real_obss, real_actions)
 
