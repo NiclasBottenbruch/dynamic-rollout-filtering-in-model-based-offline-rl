@@ -31,44 +31,69 @@ class EnsembleDynamics(BaseDynamics):
         obs: np.ndarray,
         action: np.ndarray
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict]:
-        "imagine single forward step"
-        obs_act = np.concatenate([obs, action], axis=-1)
+        """imagine single forward step
+        Args:
+            obs: observation of the environment shape: (batch_size, obs_dim)
+            action: action to take shape: (batch_size, action_dim)
+        Returns:
+            next_obs: next observation of the environment shape: (batch_size, obs_dim)
+            reward: reward received shape: (batch_size, 1)
+            terminal: whether the episode is done shape: (batch_size, 1)
+            info: additional information, e.g. penalty for uncertainty
+        """
+        
+        obs_act = np.concatenate([obs, action], axis=-1) # (batch_size, obs_dim + action_dim)
         obs_act = self.scaler.transform(obs_act)
-        mean, logvar = self.model(obs_act)
+        mean, logvar = self.model(obs_act) # mean (delta obs and abs reward) and logvar shape: (num_ensemble, batch_size, obs_dim + I[_with_reward])
         mean = mean.cpu().numpy()
         logvar = logvar.cpu().numpy()
-        mean[..., :-1] += obs
-        std = np.sqrt(np.exp(logvar))
+        mean[..., :-1] += obs # add current observation to mean (delta obs) to get next observation
+        std = np.exp(logvar / 2) # = np.sqrt(np.exp(logvar))        
 
-        ensemble_samples = (mean + np.random.normal(size=mean.shape) * std).astype(np.float32)
+        # sample next observation and reward - assuming gaussian distribution with zero covariance between dimensions
+        ensemble_samples = (mean + np.random.normal(size=mean.shape) * std).astype(np.float32) # [num_ensemble, batch_size, obs_dim + I[_with_reward]]
 
         # choose one model from ensemble
         num_models, batch_size, _ = ensemble_samples.shape
-        model_idxs = self.model.random_elite_idxs(batch_size)
-        samples = ensemble_samples[model_idxs, np.arange(batch_size)]
+        model_idxs = self.model.random_elite_idxs(batch_size) # [batch_size] - random indices of elite models for each sample
+        samples = ensemble_samples[model_idxs, np.arange(batch_size)] # [batch_size, obs_dim + I[_with_reward]] - take sample from the chosen model 
         
-        next_obs = samples[..., :-1]
-        reward = samples[..., -1:]
+        next_obs = samples[..., :-1] # [batch_size, obs_dim] - next observation
+        reward = samples[..., -1:] # [batch_size, 1] - reward
         terminal = self.terminal_fn(obs, action, next_obs)
         info = {}
         info["raw_reward"] = reward
 
+        # penalize reward based on uncertainty
         if self._penalty_coef:
             if self._uncertainty_mode == "aleatoric":
-                penalty = np.amax(np.linalg.norm(std, axis=2), axis=0)
+                penalty = np.amax(np.linalg.norm(std, axis=2), axis=0) # [batch_size] - maximum uncertainty across all models in ensemble based on predicted std
             elif self._uncertainty_mode == "pairwise-diff":
-                next_obses_mean = mean[..., :-1]
-                next_obs_mean = np.mean(next_obses_mean, axis=0)
+                next_obses_mean = mean[..., :-1] # [num_ensemble, batch_size, obs_dim] - mean of predicted next observations
+                next_obs_mean = np.mean(next_obses_mean, axis=0) # [batch_size, obs_dim] - mean of all models in ensemble
                 diff = next_obses_mean - next_obs_mean
-                penalty = np.amax(np.linalg.norm(diff, axis=2), axis=0)
+                penalty = np.amax(np.linalg.norm(diff, axis=2), axis=0) # [batch_size] - maximum deviation from mean across all models in ensemble
+            elif self._uncertainty_mode == "pairwise-diff_with_std":
+                next_obses_mean = mean[..., :-1] # [num_ensemble, batch_size, obs_dim] - mean of predicted next observations
+                next_obs_mean = np.mean(next_obses_mean, axis=0) # [batch_size, obs_dim] - mean of all models in ensemble
+                next_obses_std = std[..., :-1] # [num_ensemble, batch_size, obs_dim] - std of predicted next observations
+                diff_with_std = np.abs(next_obses_mean - next_obs_mean) + next_obses_std
+                penalty = np.amax(np.linalg.norm(diff_with_std, axis=2), axis=0) # [batch_size] 
             elif self._uncertainty_mode == "ensemble_std":
                 next_obses_mean = mean[..., :-1]
-                penalty = np.sqrt(next_obses_mean.var(0).mean(1))
+                penalty = np.sqrt(next_obses_mean.var(0).mean(1)) # [batch_size] - std of predicted next observations across all models in ensemble
+            elif self._uncertainty_mode == "dimensionwise_diff_with_std":
+                next_obses_mean = mean[..., :-1]
+                next_obses_std = std[..., :-1]
+                lower = np.amin(next_obses_mean - next_obses_std, axis=0) # [batch_size, obs_dim] - lower bound of predicted next observations across all models in ensemble
+                upper = np.amax(next_obses_mean + next_obses_std, axis=0) # [batch_size, obs_dim] - upper bound of predicted next observations across all models in ensemble
+                penalty = np.linalg.norm(upper - lower, axis=1) # [batch_size]
+                
             else:
                 raise ValueError
             penalty = np.expand_dims(penalty, 1).astype(np.float32)
             assert penalty.shape == reward.shape
-            reward = reward - self._penalty_coef * penalty
+            reward = reward - self._penalty_coef * penalty # [batch_size, 1] - penalized reward
             info["penalty"] = penalty
         
         return next_obs, reward, terminal, info
