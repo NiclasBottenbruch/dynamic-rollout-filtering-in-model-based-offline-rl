@@ -129,6 +129,9 @@ def load_rollout_docs(rollout_doc_paths: Union[str, list], add_model_error_if_no
         if verbose:
             print(f"Loading rollout document {path}")
         doc = json.load(open(path, 'r'))
+        for k,v in doc.items():
+            if not isinstance(v, np.ndarray):
+                doc[k] = np.array(v)
         docs.append(doc)
 
     if add_model_error_if_not_contained:
