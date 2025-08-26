@@ -110,7 +110,7 @@ def add_model_error_to_rollout_docs_for_all_files_in_dir(dir_path: str, env_name
             add_model_error_to_rollout_doc(file_path, env_name, verbose=True)
             
 
-def load_rollout_docs(rollout_doc_paths: Union[str, list], add_model_error_if_not_contained: bool = False, env:str = None, verbose: bool = False) -> list:
+def load_rollout_docs(rollout_doc_paths: Union[str, list], add_model_error_if_not_contained: bool = False, env:str = None, cast_to_nparray: bool = True, verbose: bool = False) -> list:
     """
         Loads rollout documents from the specified paths.
         Args:
@@ -129,9 +129,10 @@ def load_rollout_docs(rollout_doc_paths: Union[str, list], add_model_error_if_no
         if verbose:
             print(f"Loading rollout document {path}")
         doc = json.load(open(path, 'r'))
-        for k,v in doc.items():
-            if not isinstance(v, np.ndarray):
-                doc[k] = np.array(v)
+        if cast_to_nparray:
+            for k,v in doc.items():
+                if not isinstance(v, np.ndarray):
+                    doc[k] = np.array(v)
         docs.append(doc)
 
     if add_model_error_if_not_contained:
