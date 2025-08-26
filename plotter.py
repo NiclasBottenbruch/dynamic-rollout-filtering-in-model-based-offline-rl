@@ -59,7 +59,7 @@ def plot_correlation_bars(doc:dict, uncertainty_measures:list, error_key:str='mo
 
 
 
-def plot_scatter_correlation(x, y, xlabel='X-axis', ylabel='Y-axis', title='Scatter Correlation Plot', mark_percentile:int=70, bins=1000, fig_size=(8, 6)):
+def plot_scatter_correlation(x, y, xlabel='X-axis', ylabel='Y-axis', title='Scatter Correlation Plot', mark_percentile:int=70, bins=1000, fig_size=(8, 6), points_s:float=2, points_alpha:float=0.01):
     """
     Plots a scatter plot of x vs y and displays the Spearman correlation coefficient.
 
@@ -84,8 +84,8 @@ def plot_scatter_correlation(x, y, xlabel='X-axis', ylabel='Y-axis', title='Scat
         y=y,
         kind="scatter",
         marginal_kws=dict(bins=bins, fill=True),
-        s=2,
-        alpha=0.1
+        s=points_s,
+        alpha=points_alpha
     )
     g.fig.set_size_inches(*fig_size)
     g.ax_joint.set_xscale("log")
