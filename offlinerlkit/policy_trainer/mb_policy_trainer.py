@@ -4,6 +4,7 @@ import os
 import numpy as np
 import torch
 import gym
+import json
 
 from typing import Optional, Dict, List, Tuple
 from tqdm import tqdm
@@ -53,7 +54,56 @@ class MBPolicyTrainer:
         self.model_save_freq = model_save_freq
         self.lr_scheduler = lr_scheduler
 
-    def train(self) -> Dict[str, float]:
+    @staticmethod
+    def encode_numpy(obj):
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
+
+    def create_synthetic_data(self, log=True, return_rollout_doc=False) -> None:
+        """ Create synthetic data using the learned dynamics model and the policy. Add them to the fake buffer """
+
+        # create data with the model
+        init_obss = self.real_buffer.sample(self._rollout_batch_size)["observations"].cpu().numpy() # sample from real buffer _rollout_batch_size observations shape: (batch_size, obs_dim)
+        # print("init_obss shape: ", init_obss.shape)
+
+        # here select model to use for rollouts
+        
+        rollout_transitions, rollout_info = self.policy.rollout(init_obss, self._rollout_length, return_rollout_doc) # create model-based rollouts
+
+        print(f"rollout_transitions['obss'].shape: {rollout_transitions['obss'].shape}")
+                    # print(f"rollout_info: {rollout_info}")                    
+        print(f"rollout_transitions['next_obss'].shape: {rollout_transitions['next_obss'].shape}")
+        print(f"rollout_transitions['actions'].shape: {rollout_transitions['actions'].shape}")
+                    # print(f"rollout_transitions['rewards'].shape: {rollout_transitions['rewards'].shape}")
+                    # print(f"rollout_transitions['terminals'].shape: {rollout_transitions['terminals'].shape}")
+
+        self.fake_buffer.add_batch(**rollout_transitions) # add the rollouts to the fake buffer
+
+        if log:
+            self.logger.log(
+                "num rollout transitions: {}, reward mean: {:.4f}".\
+                format(rollout_info["num_transitions"], rollout_info["reward_mean"])
+                )
+        if return_rollout_doc:
+            uncertainty_monitor = rollout_info["uncertainty_monitor"]
+            rollout_info.pop("uncertainty_monitor", None) # remove uncertainty monitor from rollout info to avoid logging it below
+        if log:
+            for _key, _value in rollout_info.items():
+                self.logger.logkv_mean("rollout_info/"+_key, _value)
+        if return_rollout_doc:
+
+            for _key, _value in uncertainty_monitor.items():
+                if isinstance(_value, np.ndarray):
+                    print(f"uncertainty_monitor[{_key}] shape: {_value.shape}")
+                else:
+                    print(f"uncertainty_monitor[{_key}] is not a numpy array, type: {type(_value)}")
+
+            return uncertainty_monitor
+
+
+
+    def train(self, document_rollouts:bool=False) -> Dict[str, float]:
         start_time = time.time()
 
         num_timesteps = 0
@@ -66,27 +116,14 @@ class MBPolicyTrainer:
             pbar = tqdm(range(self._step_per_epoch), desc=f"Epoch #{e}/{self._epoch}")
             for it in pbar:
                 if num_timesteps % self._rollout_freq == 0:
-                    # create data with the model
-                    init_obss = self.real_buffer.sample(self._rollout_batch_size)["observations"].cpu().numpy() # sample from real buffer _rollout_batch_size observations shape: (batch_size, obs_dim)
-                    # print("init_obss shape: ", init_obss.shape)
+                    # create synthetic data
+                    log_rollout_doc = True if (document_rollouts and e % self.eval_create_video_freq == 0 and self.eval_create_video_freq > 0) else False
+                    rollout_doc = self.create_synthetic_data(return_rollout_doc=log_rollout_doc)
 
-                    # here select model to use for rollouts
-                    rollout_transitions, rollout_info = self.policy.rollout(init_obss, self._rollout_length) # create model-based rollouts
-
-                    # print(f"rollout_transitions['obss'].shape: {rollout_transitions['obss'].shape}")
-                    # print(f"rollout_transitions['next_obss'].shape: {rollout_transitions['next_obss'].shape}")
-                    # print(f"rollout_transitions['actions'].shape: {rollout_transitions['actions'].shape}")
-                    # print(f"rollout_transitions['rewards'].shape: {rollout_transitions['rewards'].shape}")
-                    # print(f"rollout_transitions['terminals'].shape: {rollout_transitions['terminals'].shape}")
-                    # print(f"rollout_info: {rollout_info}")                    
-
-                    self.fake_buffer.add_batch(**rollout_transitions) # add the rollouts to the fake buffer
-                    self.logger.log(
-                        "num rollout transitions: {}, reward mean: {:.4f}".\
-                            format(rollout_info["num_transitions"], rollout_info["reward_mean"])
-                    )
-                    for _key, _value in rollout_info.items():
-                        self.logger.logkv_mean("rollout_info/"+_key, _value)
+                    if log_rollout_doc:
+                        # write rollout doc to file
+                        with open(os.path.join(self.logger.rollout_docs_dir, f"epoch_{e}_timesteps_{num_timesteps}_rollout_doc.json"), "w") as f:
+                            json.dump(rollout_doc, f, default=MBPolicyTrainer.encode_numpy, indent=3)     
 
                 real_sample_size = int(self._batch_size * self._real_ratio)
                 fake_sample_size = self._batch_size - real_sample_size

@@ -6,6 +6,7 @@ import argparse
 import datetime
 import warnings
 import numpy as np
+from numbers import Number
 
 from collections import defaultdict, deque
 from typing import Any, Dict, List, Optional, Sequence, TextIO, Tuple, Union
@@ -259,12 +260,14 @@ class Logger(object):
         self._model_dir = os.path.join(self._dir, "model")
         self._result_dir = os.path.join(self._dir, "result")
         self.video_dir = os.path.join(self._dir, "video")
+        self.rollout_docs_dir = os.path.join(self._dir, "rollout_docs")
 
         os.mkdir(self._record_dir)
         os.mkdir(self._checkpoint_dir)
         os.mkdir(self._model_dir)
         os.mkdir(self._result_dir)
         os.mkdir(self.video_dir)
+        os.mkdir(self.rollout_docs_dir)
     
     def _init_ouput_handlers(self, output_config: Dict) -> None:
         self._output_handlers = []

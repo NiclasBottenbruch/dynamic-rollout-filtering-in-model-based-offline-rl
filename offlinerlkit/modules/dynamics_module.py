@@ -77,7 +77,7 @@ class EnsembleDynamicsModel(nn.Module):
             nn.Parameter(torch.ones(obs_dim + self._with_reward) * -10, requires_grad=True)
         )
 
-        self.register_parameter(
+        self.register_parameter( # indices of elite models in the ensemble
             "elites",
             nn.Parameter(torch.tensor(list(range(0, self.num_elites))), requires_grad=False)
         )
@@ -124,4 +124,4 @@ class EnsembleDynamicsModel(nn.Module):
     
     def random_elite_idxs(self, batch_size: int) -> np.ndarray:
         idxs = np.random.choice(self.elites.data.cpu().numpy(), size=batch_size)
-        return idxs
+        return idxs # shape: (batch_size,)

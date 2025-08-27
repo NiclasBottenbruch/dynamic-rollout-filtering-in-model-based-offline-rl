@@ -17,19 +17,65 @@ class EnsembleDynamics(BaseDynamics):
         scaler: StandardScaler,
         terminal_fn: Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray],
         penalty_coef: float = 0.0,
-        uncertainty_mode: str = "aleatoric"
+        uncertainty_mode: str = "aleatoric",
+        monitor_uncertainty_stats: list = ["aleatoric", "pairwise-diff", "pairwise-diff_with_std", "ensemble_std", "dimensionwise_diff_with_std"]
     ) -> None:
         super().__init__(model, optim)
         self.scaler = scaler
         self.terminal_fn = terminal_fn
         self._penalty_coef = penalty_coef
         self._uncertainty_mode = uncertainty_mode
+        self._monitor_uncertainty_stats = monitor_uncertainty_stats
+
+    def _measure_uncertainty(self, mean_predicted: np.ndarray, std_predicted: np.ndarray, uncertainty_mode: str) -> np.ndarray:
+        """Measure uncertainty or discrepancy based on predicted mean and std for the next observation (and reward) from ensemble dynamics model
+        Args:
+            mean_predicted: Mean predicted by ensemble dynamics model shape: (num_ensemble, batch_size, obs_dim + I[_with_reward])
+            std_predicted: Std predicted by ensemble dynamics model shape: (num_ensemble, batch_size, obs_dim + I[_with_reward])
+            uncertainty_mode: Mode to measure uncertainty or discrepancy
+                "aleatoric": maximum uncertainty across all models in ensemble based on predicted std
+                "pairwise-diff": maximum deviation from mean across all models in ensemble
+                "pairwise-diff_with_std": maximum of deviation from mean across all models in ensemble plus predicted std
+                "ensemble_std": std of predicted next observations across all models in ensemble
+                "dimensionwise_diff_with_std": norm of dimension-wise difference between upper and lower bound of predicted next observations across all models in ensemble
+        Returns:
+            uncertainty_measure: Uncertainty or discrepancy stmeasuretistics shape: (batch_size,)
+        """
+
+        if uncertainty_mode == "aleatoric":
+            uncertainty_measure = np.amax(np.linalg.norm(std_predicted, axis=2), axis=0) # [batch_size] - maximum uncertainty across all models in ensemble based on predicted std
+        elif uncertainty_mode == "pairwise-diff":
+            next_obses_mean = mean_predicted[..., :-1] # [num_ensemble, batch_size, obs_dim] - mean of predicted next observations
+            next_obs_mean = np.mean(next_obses_mean, axis=0) # [batch_size, obs_dim] - mean of all models in ensemble
+            diff = next_obses_mean - next_obs_mean
+            uncertainty_measure = np.amax(np.linalg.norm(diff, axis=2), axis=0) # [batch_size] - maximum deviation from mean across all models in ensemble
+        elif uncertainty_mode == "pairwise-diff_with_std":
+            next_obses_mean = mean_predicted[..., :-1] # [num_ensemble, batch_size, obs_dim] - mean of predicted next observations
+            next_obs_mean = np.mean(next_obses_mean, axis=0) # [batch_size, obs_dim] - mean of all models in ensemble
+            next_obses_std = std_predicted[..., :-1] # [num_ensemble, batch_size, obs_dim] - std of predicted next observations
+            diff_with_std = np.abs(next_obses_mean - next_obs_mean) + next_obses_std
+            uncertainty_measure = np.amax(np.linalg.norm(diff_with_std, axis=2), axis=0) # [batch_size] 
+        elif uncertainty_mode == "ensemble_std":
+            next_obses_mean = mean_predicted[..., :-1]
+            uncertainty_measure = np.sqrt(next_obses_mean.var(0).mean(1)) # [batch_size] - std of predicted next observations across all models in ensemble
+        elif uncertainty_mode == "dimensionwise_diff_with_std":
+            next_obses_mean = mean_predicted[..., :-1]
+            next_obses_std = std_predicted[..., :-1]
+            lower = np.amin(next_obses_mean - next_obses_std, axis=0) # [batch_size, obs_dim] - lower bound of predicted next observations across all models in ensemble
+            upper = np.amax(next_obses_mean + next_obses_std, axis=0) # [batch_size, obs_dim] - upper bound of predicted next observations across all models in ensemble
+            uncertainty_measure = np.linalg.norm(upper - lower, axis=1) # [batch_size]
+        else:
+            raise ValueError(f"Unrecognized uncertainty mode: {uncertainty_mode}")
+        
+        assert uncertainty_measure.shape == (mean_predicted.shape[1],) # shape should be (batch_size,)
+        return uncertainty_measure
 
     @ torch.no_grad()
     def step(
         self,
         obs: np.ndarray,
-        action: np.ndarray
+        action: np.ndarray,
+        measure_uncertainty: bool = False
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict]:
         """imagine single forward step
         Args:
@@ -63,38 +109,20 @@ class EnsembleDynamics(BaseDynamics):
         terminal = self.terminal_fn(obs, action, next_obs)
         info = {}
         info["raw_reward"] = reward
-
-        # penalize reward based on uncertainty
-        if self._penalty_coef:
-            if self._uncertainty_mode == "aleatoric":
-                penalty = np.amax(np.linalg.norm(std, axis=2), axis=0) # [batch_size] - maximum uncertainty across all models in ensemble based on predicted std
-            elif self._uncertainty_mode == "pairwise-diff":
-                next_obses_mean = mean[..., :-1] # [num_ensemble, batch_size, obs_dim] - mean of predicted next observations
-                next_obs_mean = np.mean(next_obses_mean, axis=0) # [batch_size, obs_dim] - mean of all models in ensemble
-                diff = next_obses_mean - next_obs_mean
-                penalty = np.amax(np.linalg.norm(diff, axis=2), axis=0) # [batch_size] - maximum deviation from mean across all models in ensemble
-            elif self._uncertainty_mode == "pairwise-diff_with_std":
-                next_obses_mean = mean[..., :-1] # [num_ensemble, batch_size, obs_dim] - mean of predicted next observations
-                next_obs_mean = np.mean(next_obses_mean, axis=0) # [batch_size, obs_dim] - mean of all models in ensemble
-                next_obses_std = std[..., :-1] # [num_ensemble, batch_size, obs_dim] - std of predicted next observations
-                diff_with_std = np.abs(next_obses_mean - next_obs_mean) + next_obses_std
-                penalty = np.amax(np.linalg.norm(diff_with_std, axis=2), axis=0) # [batch_size] 
-            elif self._uncertainty_mode == "ensemble_std":
-                next_obses_mean = mean[..., :-1]
-                penalty = np.sqrt(next_obses_mean.var(0).mean(1)) # [batch_size] - std of predicted next observations across all models in ensemble
-            elif self._uncertainty_mode == "dimensionwise_diff_with_std":
-                next_obses_mean = mean[..., :-1]
-                next_obses_std = std[..., :-1]
-                lower = np.amin(next_obses_mean - next_obses_std, axis=0) # [batch_size, obs_dim] - lower bound of predicted next observations across all models in ensemble
-                upper = np.amax(next_obses_mean + next_obses_std, axis=0) # [batch_size, obs_dim] - upper bound of predicted next observations across all models in ensemble
-                penalty = np.linalg.norm(upper - lower, axis=1) # [batch_size]
-                
-            else:
-                raise ValueError
+        
+        if self._penalty_coef: # penalize reward based on uncertainty
+            penalty = self._measure_uncertainty(mean, std, self._uncertainty_mode) # [batch_size,] - uncertainty measure
             penalty = np.expand_dims(penalty, 1).astype(np.float32)
             assert penalty.shape == reward.shape
             reward = reward - self._penalty_coef * penalty # [batch_size, 1] - penalized reward
             info["penalty"] = penalty
+
+        if measure_uncertainty:
+            # log additional uncertainty statistics to monitor
+            uncertainty_measures = {}
+            for mode in self._monitor_uncertainty_stats:
+                uncertainty_measures[mode] = self._measure_uncertainty(mean, std, mode) # [batch_size,]
+            info["uncertainty_measures"] = uncertainty_measures
         
         return next_obs, reward, terminal, info
     

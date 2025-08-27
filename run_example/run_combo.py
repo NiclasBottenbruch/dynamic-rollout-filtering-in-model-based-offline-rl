@@ -52,7 +52,7 @@ def get_args():
     parser.add_argument("--target-entropy", type=int, default=None)
     parser.add_argument("--alpha-lr", type=float, default=1e-4) # usually 1e-4
 
-    parser.add_argument("--cql-weight", type=float, default=5) # adjust this
+    parser.add_argument("--cql-weight", type=float, default=5.0) # adjust this
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--max-q-backup", type=bool, default=False)
     parser.add_argument("--deterministic-backup", type=bool, default=True)
@@ -70,17 +70,18 @@ def get_args():
     parser.add_argument("--n-elites", type=int, default=5)
     parser.add_argument("--rollout-freq", type=int, default=1000)
     parser.add_argument("--rollout-batch-size", type=int, default=50000)   # usually 50k
-    parser.add_argument("--rollout-length", type=int, default=5)            # adjust this usually 5
+    parser.add_argument("--rollout-length", type=int, default=10)            # adjust this usually 5
     parser.add_argument("--model-retain-epochs", type=int, default=5)
-    parser.add_argument("--real-ratio", type=float, default=0.5)                                   # usually 0.5
-    parser.add_argument("--load-dynamics-path", type=str, default=None) #"log/hopper-medium-expert-v2/combo/seed_1_timestamp_24-0921-221325/model") # usually None
+    parser.add_argument("--real-ratio", type=float, default=0.5)                                # usually 0.5
+    parser.add_argument("--load-dynamics-path", type=str, default="log/hopper-medium-expert-v2/combo/seed_1_timestamp_25-0824-110711/model") #"log/hopper-medium-expert-v2/combo/seed_1_timestamp_24-0921-221325/model") # usually None
+    parser.add_argument("--document-rollouts", type=bool, default=True)
 
     parser.add_argument("--max-epochs-dynamics", type=int, default=100)    # adjust this usually 80
     parser.add_argument("--epoch", type=int, default=500)                     # adjust this
     parser.add_argument("--step-per-epoch", type=int, default=1000)
     parser.add_argument("--model-save-freq", type=int, default=25)          # adjust this
     parser.add_argument("--eval_episodes", type=int, default=10)
-    parser.add_argument("--eval-create-video-freq", type=int, default=50)   # adjust this
+    parser.add_argument("--eval-create-video-freq", type=int, default=25)   # adjust this
     parser.add_argument("--batch-size", type=int, default=256)                 # usually 256
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
 
@@ -102,6 +103,7 @@ def train(args=get_args()):
     else:
         dataset = d4rl.qlearning_dataset(env)
 
+    print(f"Device: {args.device}")
     print(f"Task: {args.task} | Dataset size: {len(dataset['observations'])} | Dataset keys: {dataset.keys()}")
 
     args.obs_shape = env.observation_space.shape
@@ -257,8 +259,8 @@ def train(args=get_args()):
         # train dynamics model
         max_epochs_dynamics = args.max_epochs_dynamics if (args.max_epochs_dynamics or 0) > 0 else None # positive or None
         dynamics.train(real_buffer.sample_all(), logger, max_epochs=max_epochs_dynamics, max_epochs_since_update=5)
-    
-    policy_trainer.train()
+
+    policy_trainer.train(document_rollouts=args.document_rollouts)
 
 
 if __name__ == "__main__":

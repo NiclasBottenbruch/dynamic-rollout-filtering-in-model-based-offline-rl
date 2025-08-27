@@ -69,7 +69,8 @@ class COMBOPolicy(CQLPolicy):
     def rollout(
         self,
         init_obss: np.ndarray,
-        rollout_length: int
+        rollout_length: int,
+        monitor_uncertainty_stats: bool = False,
     ) -> Tuple[Dict[str, np.ndarray], Dict]:
         """
         Rollout the dynamics model for a given number of steps.
@@ -85,9 +86,11 @@ class COMBOPolicy(CQLPolicy):
         rewards_arr = np.array([])
         rollout_transitions = defaultdict(list)
 
+        uncertainty_monitor = defaultdict(list)
+
         # rollout
         observations = init_obss
-        for _ in range(rollout_length):
+        for step in range(rollout_length):
             if self._uniform_rollout: # use uniform random actions (random rollout policy)
                 actions = np.random.uniform(
                     self.action_space.low[0],
@@ -96,12 +99,24 @@ class COMBOPolicy(CQLPolicy):
                 )
             else:
                 actions = self.select_action(observations) # chooses action based on self.actor policy. select_action method is inherited from SACPolicy
-            next_observations, rewards, terminals, info = self.dynamics.step(observations, actions)
+            next_observations, rewards, terminals, info = self.dynamics.step(observations, actions, measure_uncertainty=monitor_uncertainty_stats)
             rollout_transitions["obss"].append(observations)
             rollout_transitions["next_obss"].append(next_observations)
             rollout_transitions["actions"].append(actions)
             rollout_transitions["rewards"].append(rewards)
             rollout_transitions["terminals"].append(terminals)
+
+            if monitor_uncertainty_stats: # just for monitoring purposes
+                uncertainty_measures = info["uncertainty_measures"] # dict
+                uncertainty_modes = list(uncertainty_measures.keys())
+
+                uncertainty_monitor["obss"].append(observations)
+                uncertainty_monitor["next_obss_predicted"].append(next_observations)
+                uncertainty_monitor["actions"].append(actions)
+                uncertainty_monitor["step_nr"].append(np.array([step]*len(observations)))
+
+                for uncertainty_mode in uncertainty_modes:
+                    uncertainty_monitor[uncertainty_mode].append(uncertainty_measures[uncertainty_mode])
 
             num_transitions += len(observations)
             rewards_arr = np.append(rewards_arr, rewards.flatten())
@@ -109,14 +124,23 @@ class COMBOPolicy(CQLPolicy):
             nonterm_mask = (~terminals).flatten() # mask for non-terminated trajectories
             if nonterm_mask.sum() == 0:
                 break
-
             observations = next_observations[nonterm_mask]
+
+            # here also mask out stopped trajectories based on ensemble discrepancy if specified
         
-        for k, v in rollout_transitions.items():
+        for k, v in rollout_transitions.items(): # concatenate lists to np arrays
             rollout_transitions[k] = np.concatenate(v, axis=0)
 
-        return rollout_transitions, \
-            {"num_transitions": num_transitions, "reward_mean": rewards_arr.mean()}
+        rollout_info = {"num_transitions": num_transitions, "reward_mean": rewards_arr.mean()}
+
+        if monitor_uncertainty_stats:
+            for k, v in uncertainty_monitor.items(): # concatenate lists to np arrays
+                    uncertainty_monitor[k] = np.concatenate(v, axis=0)
+
+            rollout_info["uncertainty_monitor"] = uncertainty_monitor
+
+        return rollout_transitions, rollout_info
+            
     
     def learn(self, batch: Dict) -> Dict[str, float]:
         """
