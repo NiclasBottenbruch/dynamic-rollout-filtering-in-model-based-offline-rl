@@ -59,46 +59,40 @@ def plot_correlation_bars(doc:dict, uncertainty_measures:list, error_key:str='mo
 
 
 
-
-
-
-
-def plot_scatter_correlation(x, y, xlabel='X-axis', ylabel='Y-axis', title='Scatter Correlation Plot', mark_percentile:int=70, bins=1000, fig_size=(8, 6), points_s:float=2, points_alpha:float=0.01):
+def plot_scatter_correlation(x, y, xlabel='X-axis', ylabel='Y-axis', title='Scatter Correlation Plot', mark_percentile:int=70, bins=600, fig_size=(8, 6), points_s:float=2, points_alpha:float=0.01):
     """
     Plots a scatter plot of x vs y and displays the Spearman correlation coefficient.
-
-    Args:
-        x (array-like): The x values.
-        y (array-like): The y values.
-        xlabel (str): The label for the x-axis.
-        ylabel (str): The label for the y-axis.
-        title (str): The title of the plot.
-        fig_size (tuple): The figure size.
+    Marginal histograms use logarithmic bins and are aligned with the respective axes.
     """
-
     pairwise_median = np.median(x)
     pairwise_percentile = np.percentile(x, mark_percentile)
     model_error_median = np.median(y)
     model_error_70th = np.percentile(y, mark_percentile)
 
-    plt.figure(figsize=fig_size)
     # Jointplot with marginal histograms
-    g = sns.jointplot(
-        x=x,
-        y=y,
-        kind="scatter",
-        marginal_kws=dict(bins=bins, fill=True),
-        s=points_s,
-        alpha=points_alpha
-    )
-    g.fig.set_size_inches(*fig_size)
+    log_bins_x = np.logspace(np.log10(np.min(x[x > 0])), np.log10(np.max(x)), bins + 1)
+    log_bins_y = np.logspace(np.log10(np.min(y[y > 0])), np.log10(np.max(y)), bins + 1)
+    g = sns.JointGrid(x=x, y=y, height=fig_size[0])
+
+    # Scatter
+    g.plot_joint(plt.scatter, s=points_s, alpha=points_alpha)
+
+    # Marginal histogram for x (bottom)
+    g.ax_marg_x.hist(x[x > 0], bins=log_bins_x, color='grey', alpha=0.7)
+    g.ax_marg_x.set_xscale("log")
+
+    # Marginal histogram for y (right, vertical)
+    g.ax_marg_y.cla()
+    g.ax_marg_y.hist(y[y > 0], bins=log_bins_y, color='grey', alpha=0.7, orientation='horizontal')
+    g.ax_marg_y.set_yscale("log")
+
     g.ax_joint.set_xscale("log")
     g.ax_joint.set_yscale("log")
     g.ax_joint.set_xlabel(f"{xlabel} (log scale)")
     g.ax_joint.set_ylabel(f"{ylabel} (log scale)")
     g.fig.suptitle(title, y=1.03)
 
-    # Mark median and mark_percentile percentile on marginal histograms
+    # Mark median and percentile on marginal histograms
     for ax, median, perc, axis in [
         (g.ax_marg_x, pairwise_median, pairwise_percentile, 'x'),
         (g.ax_marg_y, model_error_median, model_error_70th, 'y')
@@ -111,7 +105,7 @@ def plot_scatter_correlation(x, y, xlabel='X-axis', ylabel='Y-axis', title='Scat
             ax.axhline(perc, color='g', linestyle='--', label=f'{mark_percentile}th percentile')
         ax.legend(loc="upper right")
 
-    # Draw thin lines across the scatter plot for median and mark_percentile percentile
+    # Draw thin lines across the scatter plot for median and percentile
     for value, color, label in [
         (pairwise_median, 'r', f'{pairwise_median:.2e}'),
         (pairwise_percentile, 'g', f'{pairwise_percentile:.2e}')
@@ -131,21 +125,22 @@ def plot_scatter_correlation(x, y, xlabel='X-axis', ylabel='Y-axis', title='Scat
     spearman_corr, _ = spearmanr(x, y)
 
     # Print values on plot
-    textstr = f"Pearson r: {correlation:.3f}\nSpearman rank r: {spearman_corr:.3f}"
+    textstr = f"Pearson r: {correlation:.3f}\nSpearman r: {spearman_corr:.3f}"
     g.ax_joint.text(
-        0.98, 0.02, textstr,
+        0.93, 0.02, textstr,
         transform=g.ax_joint.transAxes,
         fontsize=10,
         verticalalignment='bottom',
         horizontalalignment='right',
         bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7)
     )
-
     plt.show()
 
 
+def plot_filtering_analysis(doc, filter_indicator, bins=600, fig_size=(22, 9), filter_criterion:str=None):
+    import matplotlib.pyplot as plt
+    import numpy as np
 
-def plot_filtering_analysis(doc, filter_indicator, bins=5000, fig_size=(22, 9), filter_criterion:str=None):
     all_data = [doc["model_error_l2"], doc["model_error_l2"][filter_indicator == 0], doc["model_error_l2"][filter_indicator == 1]]
     xmin = min([np.min(d[d > 0]) for d in all_data])  # avoid log(0)
     xmax = max([np.max(d) for d in all_data])
@@ -177,6 +172,19 @@ def plot_filtering_analysis(doc, filter_indicator, bins=5000, fig_size=(22, 9), 
         else:
             bar_portions.append(np.sum(filtered & mask) / np.sum(mask))
 
+    # --- Logarithmic bins for histograms and acceptance ratio ---
+    log_bins = np.logspace(np.log10(xmin), np.log10(xmax), bins + 1)
+    bin_centers = (log_bins[:-1] + log_bins[1:]) / 2
+    acceptance_ratio = []
+    for left, right in zip(log_bins[:-1], log_bins[1:]):
+        in_bin = (model_error > left) & (model_error <= right)
+        accepted_in_bin = (filter_indicator == 0) & in_bin
+        total_in_bin = np.sum(in_bin)
+        if total_in_bin == 0:
+            acceptance_ratio.append(np.nan)
+        else:
+            acceptance_ratio.append(np.sum(accepted_in_bin) / total_in_bin)
+
     # --- Plot subplots ---
     fig, axs = plt.subplots(1, 2, figsize=fig_size)
 
@@ -186,27 +194,41 @@ def plot_filtering_analysis(doc, filter_indicator, bins=5000, fig_size=(22, 9), 
     else:
         fig.suptitle("Filtering Analysis", fontsize=16, y=1.05)
 
-    # First plot: histograms
-    axs[0].hist(data_all[data_all > 0], bins=bins, alpha=1, label="All data", color="darkgray", density=True)
-    axs[0].hist(data_0[data_0 > 0], bins=bins, alpha=0.5, label=f"Accepted, {portion_0:.2%}", color="green", density=True)
-    axs[0].hist(data_1[data_1 > 0], bins=bins, alpha=0.5, label=f"Filtered, {portion_1:.2%}", color="red", density=True)
+    # Add note below title and above plots
+    fig.text(0.5, 0.97, 
+        "Note: Histograms are normalized individually. Their relative height at each model error value must not be confused as a ratio - separate curve indicates acceptance ratio.",
+        ha='center', va='top', fontsize=13, color='navy')
+
+    # First plot: histograms (logarithmic bins)
+    ax = axs[0]
+    ax.hist(data_all[data_all > 0], bins=log_bins, alpha=1, label="All data", color="darkgray", density=True)
+    ax.hist(data_0[data_0 > 0], bins=log_bins, alpha=0.5, label=f"Accepted, {portion_0:.2%}", color="green", density=True)
+    ax.hist(data_1[data_1 > 0], bins=log_bins, alpha=0.5, label=f"Filtered, {portion_1:.2%}", color="red", density=True)
     for data, color, label in [
         (data_all, "gray", "All"),
         (data_0, "darkgreen", "Accepted"),
         (data_1, "darkred", "Filtered")
     ]:
         mean = np.mean(data)
-        axs[0].axvline(mean, color=color, linestyle='--', linewidth=1, label=f"{label} Mean: {mean:.3f}")
-    axs[0].set_xscale("log")
-    axs[0].set_xlim(xmin, xmax)
-    axs[0].set_xlabel("Model Error L2 (log scale)")
-    axs[0].set_ylabel("Percentage (normalized density)")
-    axs[0].set_title("Comparison of Model Error L2 distributions (normalized)")
-    axs[0].legend()
-    axs[0].grid(True, which="both", linestyle=":", alpha=0.3)
+        ax.axvline(mean, color=color, linestyle='--', linewidth=1, label=f"{label} Mean: {mean:.3f}")
 
-    # Second plot: portion filtered curve and bars
-    axs[1].plot(thresholds, portions, color="orange")
+    ax.set_xscale("log")
+    ax.set_xlim(xmin, xmax)
+    ax.set_xlabel("Model Error L2 (log scale)")
+    ax.set_ylabel("Percentage (normalized density)")
+    ax.set_title("Comparison of Model Error L2 distributions (normalized)")
+    ax.legend()
+    ax.grid(True, which="both", linestyle=":", alpha=0.3)
+
+    # Add bin-wise acceptance rate curve with a separate y-axis
+    ax2 = ax.twinx()
+    ax2.plot(bin_centers, acceptance_ratio, color="blue", linewidth=2, label="Acceptance Rate")
+    ax2.set_ylabel("Acceptance Rate")
+    ax2.set_ylim(0, 1)
+    ax2.legend(loc="center right")
+
+    # Second plot: portion filtered curve, bars
+    axs[1].plot(thresholds, portions, color="orange", label="Portion Filtered")
     axs[1].fill_between(thresholds, portions, color="lightblue", alpha=0.5)
     axs[1].bar(bar_thresholds, bar_portions, width=np.array(bar_thresholds)*0.15+1e-4, color="dodgerblue", alpha=0.8, zorder=3)
     for x, y in zip(bar_thresholds, bar_portions):
@@ -214,11 +236,12 @@ def plot_filtering_analysis(doc, filter_indicator, bins=5000, fig_size=(22, 9), 
     axs[1].set_xscale("log")
     axs[1].set_xlabel("Model Error L2 (log scale)")
     axs[1].set_ylabel("Portion filtered")
-    axs[1].set_title("Portion of filtered data above Model Error L2 Values")
+    axs[1].set_title("Portion of filtered data")
     axs[1].set_ylim(0, 1)
+    axs[1].legend()
     axs[1].grid(True, which="both", linestyle=":", alpha=0.3)
 
-    plt.tight_layout()
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.show()
 
 

@@ -53,7 +53,7 @@ def add_model_error_to_rollout_doc(rollout_doc_path: Union[str, list], env_name:
 
     doc = json.load(open(rollout_doc_path, 'r'))
 
-    if "next_obss_real" not in doc or "model_error_l2" not in doc or force:
+    if "next_obss_real" not in doc or "model_error_l2" not in doc or "rewards_real" not in doc or force:
         # make lists to numpy arrays
         for k,v in doc.items():
             doc[k] = np.array(v)
@@ -66,22 +66,26 @@ def add_model_error_to_rollout_doc(rollout_doc_path: Union[str, list], env_name:
         env.reset()
 
         next_obs_real = []
+        rewards_real = []
         i = 0
         for obs, act, next_obs_pred in zip(doc['obss'], doc['actions'], doc['next_obss_predicted']):
             if i % 1000 == 0 and verbose:
                 print(f"{i} / {N}")
             i += 1
             env.set_state(obs)
-            nor = env.step(act)[0]
+            nor, rewr, _, _ = env.step(act)
             next_obs_real.append(nor)
-        
+            rewards_real.append(rewr)
+
         next_obs_real = np.array(next_obs_real)
+        rewards_real = np.array(rewards_real)
         model_error_l2 = np.linalg.norm(next_obs_real - doc['next_obss_predicted'], axis=-1)
 
         if verbose:
             print(f"Next obs real and model error L2 determined")
 
         doc['next_obss_real'] = next_obs_real
+        doc['rewards_real'] = rewards_real
         doc['model_error_l2'] = model_error_l2
 
         json.dump(doc, open(rollout_doc_path, 'w'), default=encode_numpy, indent=3)
@@ -107,8 +111,7 @@ def add_model_error_to_rollout_docs_for_all_files_in_dir(dir_path: str, env_name
         if filename.endswith(".json"):
             file_path = os.path.join(dir_path, filename)
             print(f"Processing file: {file_path}")
-            add_model_error_to_rollout_doc(file_path, env_name, verbose=True)
-            
+            add_model_error_to_rollout_doc(file_path, env_name, verbose=True, force=False)
 
 def load_rollout_docs(rollout_doc_paths: Union[str, list], add_model_error_if_not_contained: bool = False, env:str = None, cast_to_nparray: bool = True, verbose: bool = False) -> list:
     """
@@ -124,6 +127,11 @@ def load_rollout_docs(rollout_doc_paths: Union[str, list], add_model_error_if_no
     if isinstance(rollout_doc_paths, str):
         rollout_doc_paths = [rollout_doc_paths]
 
+    if add_model_error_if_not_contained:
+        if env is None:
+            raise ValueError("Environment name must be provided to compute model error when add_model_error_if_not_contained is set to True.")
+        add_model_error_to_rollout_doc(rollout_doc_paths, env, verbose=verbose, force=False)
+
     docs = []
     for path in rollout_doc_paths:
         if verbose:
@@ -134,12 +142,4 @@ def load_rollout_docs(rollout_doc_paths: Union[str, list], add_model_error_if_no
                 if not isinstance(v, np.ndarray):
                     doc[k] = np.array(v)
         docs.append(doc)
-
-    if add_model_error_if_not_contained:
-        if env is None:
-            raise ValueError("Environment name must be provided to compute model error.")
-        
-        for doc in docs:
-            add_model_error_to_rollout_doc(doc, env, verbose=verbose)
-
     return docs
