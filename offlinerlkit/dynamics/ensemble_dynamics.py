@@ -17,59 +17,154 @@ class EnsembleDynamics(BaseDynamics):
         scaler: StandardScaler,
         terminal_fn: Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray],
         penalty_coef: float = 0.0,
-        uncertainty_mode: str = "aleatoric"
+        uncertainty_mode: str = "aleatoric",
+        dimwise_distribution_support_stats: dict = None
     ) -> None:
         super().__init__(model, optim)
         self.scaler = scaler
         self.terminal_fn = terminal_fn
         self._penalty_coef = penalty_coef
         self._uncertainty_mode = uncertainty_mode
+        self.dimwise_distribution_support_stats = dimwise_distribution_support_stats
+
+    def _measure_uncertainty(self, mean_predicted: np.ndarray, std_predicted: np.ndarray, uncertainty_mode: str) -> np.ndarray:
+        """Measure uncertainty or discrepancy based on predicted mean and std for the next observation (and reward) from ensemble dynamics model
+        Args:
+            mean_predicted: Mean predicted by ensemble dynamics model shape: (num_ensemble, batch_size, obs_dim + I[with_reward])
+            std_predicted: Std predicted by ensemble dynamics model shape: (num_ensemble, batch_size, obs_dim + I[with_reward])
+            uncertainty_mode: Mode to measure uncertainty or discrepancy
+                "aleatoric": maximum uncertainty across all models in ensemble based on predicted std
+                "pairwise-diff": maximum deviation from mean across all models in ensemble
+                "pairwise-diff_with_std": maximum of deviation from mean across all models in ensemble plus predicted std
+                "ensemble_std": std of predicted next observations across all models in ensemble
+                "dimensionwise_diff_with_std": norm of dimension-wise difference between upper and lower bound of predicted next observations across all models in ensemble
+                "dimensionwise_ood_measure": dimension-wise ood measure based on dimension-wise max/min exceeding distribution support
+        Returns:
+            uncertainty_measure: Uncertainty or discrepancy statistics shape: (batch_size,)
+        """
+
+        if uncertainty_mode == "aleatoric":
+            uncertainty_measure = np.amax(np.linalg.norm(std_predicted, axis=2), axis=0) # [batch_size] - maximum uncertainty across all models in ensemble based on predicted std
+        elif uncertainty_mode == "pairwise-diff":
+            next_obses_mean = mean_predicted[..., :-1] # [num_ensemble, batch_size, obs_dim] - mean of predicted next observations
+            next_obs_mean = np.mean(next_obses_mean, axis=0) # [batch_size, obs_dim] - mean of all models in ensemble
+            diff = next_obses_mean - next_obs_mean
+            uncertainty_measure = np.amax(np.linalg.norm(diff, axis=2), axis=0) # [batch_size] - maximum deviation from mean across all models in ensemble
+        elif uncertainty_mode == "pairwise-diff_with_std":
+            next_obses_mean = mean_predicted[..., :-1] # [num_ensemble, batch_size, obs_dim] - mean of predicted next observations
+            next_obs_mean = np.mean(next_obses_mean, axis=0) # [batch_size, obs_dim] - mean of all models in ensemble
+            next_obses_std = std_predicted[..., :-1] # [num_ensemble, batch_size, obs_dim] - std of predicted next observations
+            diff_with_std = np.abs(next_obses_mean - next_obs_mean) + next_obses_std
+            uncertainty_measure = np.amax(np.linalg.norm(diff_with_std, axis=2), axis=0) # [batch_size] 
+        elif uncertainty_mode == "ensemble_std":
+            next_obses_mean = mean_predicted[..., :-1]
+            uncertainty_measure = np.sqrt(next_obses_mean.var(0).mean(1)) # [batch_size] - std of predicted next observations across all models in ensemble
+        elif uncertainty_mode == "dimensionwise_diff_with_std":
+            next_obses_mean = mean_predicted[..., :-1]
+            next_obses_std = std_predicted[..., :-1]
+            lower = np.amin(next_obses_mean - next_obses_std, axis=0) # [batch_size, obs_dim] - lower bound of predicted next observations across all models in ensemble
+            upper = np.amax(next_obses_mean + next_obses_std, axis=0) # [batch_size, obs_dim] - upper bound of predicted next observations across all models in ensemble
+            uncertainty_measure = np.linalg.norm(upper - lower, axis=1) # [batch_size]
+        elif uncertainty_mode == "dimensionwise_ood_measure":
+            # dimensionwise ood measure based on dimensionwise extremes across ensemble
+            lower_minus_std = np.amin(mean_predicted - std_predicted, axis=0) # [batch_size, obs_dim + I[with_reward]]
+            upper_plus_std = np.amax(mean_predicted + std_predicted, axis=0) # [batch_size, obs_dim + I[with_reward]]
+            lower_mean = np.amin(mean_predicted, axis=0) # [batch_size, obs_dim + I[with_reward]]
+            upper_mean = np.amax(mean_predicted, axis=0) # [batch_size, obs_dim + I[with_reward]]
+
+            assert self.dimwise_distribution_support_stats is not None, "Dimension-wise distribution support stats must be provided for dimensionwise_ood_measure"
+
+            distr_min = self.dimwise_distribution_support_stats["observations"]["min"] # [obs_dim]
+            distr_max = self.dimwise_distribution_support_stats["observations"]["max"] # [obs_dim]
+            distr_p1 = self.dimwise_distribution_support_stats["observations"]["p1"] # [obs_dim]
+            distr_p99 = self.dimwise_distribution_support_stats["observations"]["p99"] # [obs_dim]
+
+            if self.model.with_reward:
+                distr_min = np.concatenate([distr_min, self.dimwise_distribution_support_stats["rewards"]["min"]]) # [obs_dim + 1]
+                distr_max = np.concatenate([distr_max, self.dimwise_distribution_support_stats["rewards"]["max"]]) # [obs_dim + 1]
+                distr_p1 = np.concatenate([distr_p1, self.dimwise_distribution_support_stats["rewards"]["p1"]]) # [obs_dim + 1]
+                distr_p99 = np.concatenate([distr_p99, self.dimwise_distribution_support_stats["rewards"]["p99"]]) # [obs_dim + 1]
+
+            score = np.zeros(lower_minus_std.shape, dtype=mean_predicted.dtype) # [batch_size, obs_dim + I[with_reward]]
+
+            # mean +/- std exceeding p1/p99 -> penalize with 1 point per dimension
+            score[lower_minus_std < distr_p1] += 1 # [batch_size, obs_dim + I[with_reward]]
+            score[upper_plus_std > distr_p99] += 1 # [batch_size, obs_dim + I[with_reward]]
+
+            # mean +/- std exceeding min/max -> penalize with 3 points per dimension
+            score[lower_minus_std < distr_min] += 3 # [batch_size, obs_dim + I[with_reward]]
+            score[upper_plus_std > distr_max] += 3 # [batch_size, obs_dim + I[with_reward]]
+
+            # mean exceeding p1/p99 -> penalize with 2 points per dimension
+            score[lower_mean < distr_p1] += 2 # [batch_size, obs_dim + I[with_reward]]
+            score[upper_mean > distr_p99] += 2 # [batch_size, obs_dim + I[with_reward]]
+
+            # mean exceeding min/max -> penalize with 5 points per dimension
+            score[lower_mean < distr_min] += 5 # [batch_size, obs_dim + I[with_reward]]
+            score[upper_mean > distr_max] += 5 # [batch_size, obs_dim + I[with_reward]]
+
+            uncertainty_measure = score.mean(axis=1) # [batch_size,]
+        else:
+            raise ValueError(f"Unrecognized uncertainty mode: {uncertainty_mode}")
+        
+        assert uncertainty_measure.shape == (mean_predicted.shape[1],) # shape should be (batch_size,)
+        return uncertainty_measure
 
     @ torch.no_grad()
     def step(
         self,
         obs: np.ndarray,
-        action: np.ndarray
+        action: np.ndarray,
+        wanted_uncertainty_measures: list[str] = [],
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict]:
-        "imagine single forward step"
-        obs_act = np.concatenate([obs, action], axis=-1)
+        """imagine single forward step
+        Args:
+            obs: observation of the environment shape: (batch_size, obs_dim)
+            action: action to take shape: (batch_size, action_dim)
+            wanted_uncertainty_measures: List of uncertainty measures to return in info dict
+                    possible values: ["aleatoric", "pairwise-diff", "pairwise-diff_with_std", "ensemble_std", "dimensionwise_diff_with_std"]
+        Returns:
+            next_obs: next observation of the environment shape: (batch_size, obs_dim)
+            reward: reward received shape: (batch_size, 1)
+            terminal: whether the episode is done shape: (batch_size, 1)
+            info: additional information, e.g. penalty for uncertainty
+        """
+        
+        obs_act = np.concatenate([obs, action], axis=-1) # (batch_size, obs_dim + action_dim)
         obs_act = self.scaler.transform(obs_act)
-        mean, logvar = self.model(obs_act)
+        mean, logvar = self.model(obs_act) # mean (delta obs and abs reward) and logvar shape: (num_ensemble, batch_size, obs_dim + I[with_reward])
         mean = mean.cpu().numpy()
         logvar = logvar.cpu().numpy()
-        mean[..., :-1] += obs
-        std = np.sqrt(np.exp(logvar))
+        mean[..., :-1] += obs # add current observation to mean (delta obs) to get next observation
+        std = np.exp(logvar / 2) # = np.sqrt(np.exp(logvar))        
 
-        ensemble_samples = (mean + np.random.normal(size=mean.shape) * std).astype(np.float32)
+        # sample next observation and reward - assuming gaussian distribution with zero covariance between dimensions
+        ensemble_samples = (mean + np.random.normal(size=mean.shape) * std).astype(np.float32) # [num_ensemble, batch_size, obs_dim + I[with_reward]]
 
         # choose one model from ensemble
         num_models, batch_size, _ = ensemble_samples.shape
-        model_idxs = self.model.random_elite_idxs(batch_size)
-        samples = ensemble_samples[model_idxs, np.arange(batch_size)]
+        model_idxs = self.model.random_elite_idxs(batch_size) # [batch_size] - random indices of elite models for each sample
+        samples = ensemble_samples[model_idxs, np.arange(batch_size)] # [batch_size, obs_dim + I[with_reward]] - take sample from the chosen model 
         
-        next_obs = samples[..., :-1]
-        reward = samples[..., -1:]
+        next_obs = samples[..., :-1] # [batch_size, obs_dim] - next observation
+        reward = samples[..., -1:] # [batch_size, 1] - reward
         terminal = self.terminal_fn(obs, action, next_obs)
         info = {}
         info["raw_reward"] = reward
-
-        if self._penalty_coef:
-            if self._uncertainty_mode == "aleatoric":
-                penalty = np.amax(np.linalg.norm(std, axis=2), axis=0)
-            elif self._uncertainty_mode == "pairwise-diff":
-                next_obses_mean = mean[..., :-1]
-                next_obs_mean = np.mean(next_obses_mean, axis=0)
-                diff = next_obses_mean - next_obs_mean
-                penalty = np.amax(np.linalg.norm(diff, axis=2), axis=0)
-            elif self._uncertainty_mode == "ensemble_std":
-                next_obses_mean = mean[..., :-1]
-                penalty = np.sqrt(next_obses_mean.var(0).mean(1))
-            else:
-                raise ValueError
+        
+        if self._penalty_coef: # penalize reward based on uncertainty
+            penalty = self._measure_uncertainty(mean, std, self._uncertainty_mode) # [batch_size,] - uncertainty measure
             penalty = np.expand_dims(penalty, 1).astype(np.float32)
             assert penalty.shape == reward.shape
-            reward = reward - self._penalty_coef * penalty
+            reward = reward - self._penalty_coef * penalty # [batch_size, 1] - penalized reward
             info["penalty"] = penalty
+
+        if wanted_uncertainty_measures:
+            # log additional uncertainty statistics to monitor
+            uncertainty_measures = {}
+            for mode in wanted_uncertainty_measures:
+                uncertainty_measures[mode] = self._measure_uncertainty(mean, std, mode) # [batch_size,]
+            info["uncertainty_measures"] = uncertainty_measures
         
         return next_obs, reward, terminal, info
     

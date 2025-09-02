@@ -45,7 +45,7 @@ class EnsembleDynamicsModel(nn.Module):
 
         self.num_ensemble = num_ensemble
         self.num_elites = num_elites
-        self._with_reward = with_reward
+        self.with_reward = with_reward
         self.device = torch.device(device)
 
         self.activation = activation()
@@ -53,30 +53,31 @@ class EnsembleDynamicsModel(nn.Module):
         assert len(weight_decays) == (len(hidden_dims) + 1)
 
         module_list = []
-        hidden_dims = [obs_dim+action_dim] + list(hidden_dims)
+        hidden_dims = [obs_dim+action_dim] + list(hidden_dims) # add input layer dimension to list
         if weight_decays is None:
-            weight_decays = [0.0] * (len(hidden_dims) + 1)
+            weight_decays = [0.0] * (len(hidden_dims) + 1) # default weight decay is 0.0 for all layers
+
         for in_dim, out_dim, weight_decay in zip(hidden_dims[:-1], hidden_dims[1:], weight_decays[:-1]):
             module_list.append(EnsembleLinear(in_dim, out_dim, num_ensemble, weight_decay))
-        self.backbones = nn.ModuleList(module_list)
+        self.backbones = nn.ModuleList(module_list) # list of ensemble linear layers
 
         self.output_layer = EnsembleLinear(
             hidden_dims[-1],
-            2 * (obs_dim + self._with_reward),
+            2 * (obs_dim + self.with_reward), # output mean and logvar (that's why 2*) for each obs dimension and potentially reward
             num_ensemble,
             weight_decays[-1]
         )
 
         self.register_parameter(
             "max_logvar",
-            nn.Parameter(torch.ones(obs_dim + self._with_reward) * 0.5, requires_grad=True)
+            nn.Parameter(torch.ones(obs_dim + self.with_reward) * 0.5, requires_grad=True)
         )
         self.register_parameter(
             "min_logvar",
-            nn.Parameter(torch.ones(obs_dim + self._with_reward) * -10, requires_grad=True)
+            nn.Parameter(torch.ones(obs_dim + self.with_reward) * -10, requires_grad=True)
         )
 
-        self.register_parameter(
+        self.register_parameter( # indices of elite models in the ensemble
             "elites",
             nn.Parameter(torch.tensor(list(range(0, self.num_elites))), requires_grad=False)
         )
@@ -84,11 +85,19 @@ class EnsembleDynamicsModel(nn.Module):
         self.to(self.device)
 
     def forward(self, obs_action: np.ndarray) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Forward pass through the ensemble dynamics model.
+        Args:
+            obs_action (np.ndarray): Input tensor of shape (batch_size, obs_dim + action_dim).
+            (or (num_ensemble, batch_size, obs_dim + action_dim) if each ensemble has its own input)
+        Returns:
+            Tuple[torch.Tensor, torch.Tensor]: Output mean and logvar tensors each of shape (num_ensemble, batch_size, obs_dim + self.with_reward).
+        """
         obs_action = torch.as_tensor(obs_action, dtype=torch.float32).to(self.device)
         output = obs_action
         for layer in self.backbones:
-            output = self.activation(layer(output))
-        mean, logvar = torch.chunk(self.output_layer(output), 2, dim=-1)
+            output = self.activation(layer(output)) # apply activation function after each ensemble linear hidden layer
+        output = self.output_layer(output) # [num_ensemble, batch_size, 2 * (obs_dim + self.with_reward)]
+        mean, logvar = torch.chunk(output, 2, dim=-1) # split output into 2 junks along last dim - mean and logvar
         logvar = soft_clamp(logvar, self.min_logvar, self.max_logvar)
         return mean, logvar
 
@@ -115,4 +124,4 @@ class EnsembleDynamicsModel(nn.Module):
     
     def random_elite_idxs(self, batch_size: int) -> np.ndarray:
         idxs = np.random.choice(self.elites.data.cpu().numpy(), size=batch_size)
-        return idxs
+        return idxs # shape: (batch_size,)

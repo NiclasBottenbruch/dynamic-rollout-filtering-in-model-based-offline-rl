@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import gym
+from tqdm import tqdm
 
 from torch.nn import functional as F
 from typing import Dict, Union, Tuple
@@ -25,6 +26,7 @@ class COMBOPolicy(CQLPolicy):
         critic1_optim: torch.optim.Optimizer,
         critic2_optim: torch.optim.Optimizer,
         action_space: gym.spaces.Space,
+
         tau: float = 0.005,
         gamma: float  = 0.99,
         alpha: Union[float, Tuple[float, torch.Tensor, torch.optim.Optimizer]] = 0.2,
@@ -37,7 +39,9 @@ class COMBOPolicy(CQLPolicy):
         cql_alpha_lr: float = 1e-4,
         num_repeart_actions:int = 10,
         uniform_rollout: bool = False,
-        rho_s: str = "mix"
+        rho_s: str = "mix",
+        dynamic_rollout_uncertainty_measures: list[str] = [],
+        dynamic_rollout_uncertainty_thresholds: list[float] = [] # if None, will not use this measure for filtering
     ) -> None:
         super().__init__(
             actor,
@@ -64,50 +68,107 @@ class COMBOPolicy(CQLPolicy):
         self._uniform_rollout = uniform_rollout
         self._rho_s = rho_s
 
+        # For dynamic rollout length
+        self._dynamic_rollout_uncertainty_measures = dynamic_rollout_uncertainty_measures
+        self._dynamic_rollout_uncertainty_thresholds = dynamic_rollout_uncertainty_thresholds
+        assert len(self._dynamic_rollout_uncertainty_measures) == len(self._dynamic_rollout_uncertainty_thresholds)
+
     def rollout(
         self,
         init_obss: np.ndarray,
-        rollout_length: int
+        rollout_length: int,
+        monitor_rollout: bool = False,
     ) -> Tuple[Dict[str, np.ndarray], Dict]:
+        """
+        Rollout the dynamics model for a given number of steps.
+
+        Args:
+            init_obss (np.ndarray): The initial observations to rollout from.
+            rollout_length (int): The number of steps to rollout the dynamics model.
+        Returns:
+            Tuple[Dict[str, np.ndarray], Dict]: A tuple containing the rollout transitions and the rollout statistics.
+        """
 
         num_transitions = 0
+        num_unfiltered_transitions = 0
         rewards_arr = np.array([])
         rollout_transitions = defaultdict(list)
 
+        rollout_monitor = defaultdict(list)
+
         # rollout
         observations = init_obss
-        for _ in range(rollout_length):
-            if self._uniform_rollout:
+        for step in range(rollout_length):
+            if self._uniform_rollout: # use uniform random actions (random rollout policy)
                 actions = np.random.uniform(
                     self.action_space.low[0],
                     self.action_space.high[0],
                     size=(len(observations), self.action_space.shape[0])
                 )
             else:
-                actions = self.select_action(observations)
-            next_observations, rewards, terminals, info = self.dynamics.step(observations, actions)
-            rollout_transitions["obss"].append(observations)
-            rollout_transitions["next_obss"].append(next_observations)
-            rollout_transitions["actions"].append(actions)
-            rollout_transitions["rewards"].append(rewards)
-            rollout_transitions["terminals"].append(terminals)
+                actions = self.select_action(observations) # chooses action based on self.actor policy. select_action method is inherited from SACPolicy
+            next_observations, rewards, terminals, info = self.dynamics.step(observations, actions, wanted_uncertainty_measures=self._dynamic_rollout_uncertainty_measures)
 
-            num_transitions += len(observations)
-            rewards_arr = np.append(rewards_arr, rewards.flatten())
+            mask = np.ones_like(rewards, dtype=bool).flatten() # init mask - determines which transitions and rollouts to keep
 
-            nonterm_mask = (~terminals).flatten()
-            if nonterm_mask.sum() == 0:
+            if self._dynamic_rollout_uncertainty_measures:
+                uncertainty_measures = info["uncertainty_measures"] # dict
+
+                # mask for data below uncertainty threshold
+                for m, t in zip(self._dynamic_rollout_uncertainty_measures, self._dynamic_rollout_uncertainty_thresholds):
+                    if t is not None and t:
+                        mask = mask & (uncertainty_measures[m] < t)
+
+            rollout_transitions["obss"].append(observations[mask])
+            rollout_transitions["next_obss"].append(next_observations[mask])
+            rollout_transitions["actions"].append(actions[mask])
+            rollout_transitions["rewards"].append(rewards[mask])
+            rollout_transitions["terminals"].append(terminals[mask])
+
+            if monitor_rollout: # just for monitoring purposes
+                rollout_monitor["obss"].append(observations[mask])
+                rollout_monitor["next_obss_predicted"].append(next_observations[mask])
+                rollout_monitor["actions"].append(actions[mask])
+                rollout_monitor["step_nr"].append(np.array([step]*len(observations[mask])))
+
+                if self._dynamic_rollout_uncertainty_measures:
+                    # add uncertainty measures to monitor - only keep masked values (that are used as synthetic data)
+                    uncertainty_modes = list(uncertainty_measures.keys())
+                    for uncertainty_mode in uncertainty_modes:
+                        rollout_monitor[uncertainty_mode].append(uncertainty_measures[uncertainty_mode][mask])
+
+            num_transitions += len(observations[mask])
+            rewards_arr = np.append(rewards_arr, rewards[mask].flatten())
+            num_unfiltered_transitions += len(observations)
+
+            mask = mask & (~terminals).flatten() # additionally mask for non-terminated trajectories
+            if mask.sum() == 0:
                 break
-
-            observations = next_observations[nonterm_mask]
+            observations = next_observations[mask]
         
-        for k, v in rollout_transitions.items():
+        for k, v in rollout_transitions.items(): # concatenate lists to np arrays
             rollout_transitions[k] = np.concatenate(v, axis=0)
 
-        return rollout_transitions, \
-            {"num_transitions": num_transitions, "reward_mean": rewards_arr.mean()}
+        rollout_info = {"num_transitions": num_transitions, "reward_mean": rewards_arr.mean(), "filter_acceptance_ratio": num_transitions / num_unfiltered_transitions if num_unfiltered_transitions > 0 else 0}
+
+        if monitor_rollout:
+            for k, v in rollout_monitor.items(): # concatenate lists to np arrays
+                    rollout_monitor[k] = np.concatenate(v, axis=0)
+
+            rollout_info["rollout_monitor"] = rollout_monitor
+
+        return rollout_transitions, rollout_info
+            
     
     def learn(self, batch: Dict) -> Dict[str, float]:
+        """
+        Training the actor and crirics conservatively from the given batch consisting of real and fake transitions.
+
+        Args:
+            batch (Dict): A dictionary containing real and fake transitions.
+        
+        """
+
         real_batch, fake_batch = batch["real"], batch["fake"]
         mix_batch = {k: torch.cat([real_batch[k], fake_batch[k]], 0) for k in real_batch.keys()}
 
@@ -190,7 +251,7 @@ class COMBOPolicy(CQLPolicy):
         # cat_q shape: (batch_size, 3 * num_repeat, 1)
         cat_q1 = torch.cat([obs_pi_value1, next_obs_pi_value1, random_value1], 1)
         cat_q2 = torch.cat([obs_pi_value2, next_obs_pi_value2, random_value2], 1)
-        # Samples from the original dataset
+        # Samples from the original (real) dataset
         real_obss, real_actions = real_batch['observations'], real_batch['actions']
         q1, q2 = self.critic1(real_obss, real_actions), self.critic2(real_obss, real_actions)
 

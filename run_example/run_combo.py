@@ -44,15 +44,15 @@ def get_args():
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--actor-lr", type=float, default=1e-4)
     parser.add_argument("--critic-lr", type=float, default=3e-4)
-    parser.add_argument("--hidden-dims", type=int, nargs='*', default=[256, 256, 256])
+    parser.add_argument("--hidden-dims", type=int, nargs='*', default=[256, 256, 256]) # usually 256 in each layer
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--tau", type=float, default=0.005)
     parser.add_argument("--alpha", type=float, default=0.2)
     parser.add_argument("--auto-alpha", default=True)
     parser.add_argument("--target-entropy", type=int, default=None)
-    parser.add_argument("--alpha-lr", type=float, default=1e-4)
+    parser.add_argument("--alpha-lr", type=float, default=1e-4) # usually 1e-4
 
-    parser.add_argument("--cql-weight", type=float, default=5.0)
+    parser.add_argument("--cql-weight", type=float, default=5.0) # adjust this
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--max-q-backup", type=bool, default=False)
     parser.add_argument("--deterministic-backup", type=bool, default=True)
@@ -63,22 +63,26 @@ def get_args():
     parser.add_argument("--uniform-rollout", type=bool, default=False)
     parser.add_argument("--rho-s", type=str, default="mix", choices=["model", "mix"])
 
-    parser.add_argument("--dynamics-lr", type=float, default=1e-3)
-    parser.add_argument("--dynamics-hidden-dims", type=int, nargs='*', default=[200, 200, 200, 200])
+    parser.add_argument("--dynamics-lr", type=float, default=1e-3)        # usually 1e-3
+    parser.add_argument("--dynamics-hidden-dims", type=int, nargs='*', default=[200, 200, 200, 200]) # usually 200 in each layer
     parser.add_argument("--dynamics-weight-decay", type=float, nargs='*', default=[2.5e-5, 5e-5, 7.5e-5, 7.5e-5, 1e-4])
     parser.add_argument("--n-ensemble", type=int, default=7)
     parser.add_argument("--n-elites", type=int, default=5)
     parser.add_argument("--rollout-freq", type=int, default=1000)
-    parser.add_argument("--rollout-batch-size", type=int, default=50000)
-    parser.add_argument("--rollout-length", type=int, default=5)
+    parser.add_argument("--rollout-batch-size", type=int, default=50000)   # usually 50k
+    parser.add_argument("--rollout-length", type=int, default=10)            # adjust this usually 5
     parser.add_argument("--model-retain-epochs", type=int, default=5)
-    parser.add_argument("--real-ratio", type=float, default=0.5)
-    parser.add_argument("--load-dynamics-path", type=str, default=None)
+    parser.add_argument("--real-ratio", type=float, default=0.5)                                # usually 0.5
+    parser.add_argument("--load-dynamics-path", type=str, default="log/hopper-medium-expert-v2/combo/seed_1_timestamp_25-0824-110711/model") #"log/hopper-medium-expert-v2/combo/seed_1_timestamp_24-0921-221325/model") # usually None
+    parser.add_argument("--document-rollouts", type=bool, default=True)
 
-    parser.add_argument("--epoch", type=int, default=1000)
+    parser.add_argument("--max-epochs-dynamics", type=int, default=100)    # adjust this usually 80
+    parser.add_argument("--epoch", type=int, default=500)                     # adjust this
     parser.add_argument("--step-per-epoch", type=int, default=1000)
+    parser.add_argument("--model-save-freq", type=int, default=25)          # adjust this
     parser.add_argument("--eval_episodes", type=int, default=10)
-    parser.add_argument("--batch-size", type=int, default=256)
+    parser.add_argument("--eval-create-video-freq", type=int, default=25)   # adjust this
+    parser.add_argument("--batch-size", type=int, default=256)                 # usually 256
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
 
     return parser.parse_args()
@@ -98,7 +102,14 @@ def train(args=get_args()):
         dataset = qlearning_dataset(env)
     else:
         dataset = d4rl.qlearning_dataset(env)
+
+    print(f"Device: {args.device}")
+    print(f"Task: {args.task} | Dataset size: {len(dataset['observations'])} | Dataset keys: {dataset.keys()}")
+
     args.obs_shape = env.observation_space.shape
+
+    print(f"obs_shape: {args.obs_shape}")
+
     args.action_dim = np.prod(env.action_space.shape)
     args.max_action = env.action_space.high[0]
 
@@ -202,6 +213,8 @@ def train(args=get_args()):
         device=args.device
     )
     real_buffer.load_dataset(dataset)
+
+    # buffer for synthetic data generated using dynamics model
     fake_buffer = ReplayBuffer(
         buffer_size=args.rollout_batch_size*args.rollout_length*args.model_retain_epochs,
         obs_shape=args.obs_shape,
@@ -236,14 +249,18 @@ def train(args=get_args()):
         batch_size=args.batch_size,
         real_ratio=args.real_ratio,
         eval_episodes=args.eval_episodes,
+        eval_create_video_freq=args.eval_create_video_freq,
+        model_save_freq=args.model_save_freq,
         lr_scheduler=lr_scheduler
     )
 
     # train
     if not load_dynamics_model:
-        dynamics.train(real_buffer.sample_all(), logger, max_epochs_since_update=5)
-    
-    policy_trainer.train()
+        # train dynamics model
+        max_epochs_dynamics = args.max_epochs_dynamics if (args.max_epochs_dynamics or 0) > 0 else None # positive or None
+        dynamics.train(real_buffer.sample_all(), logger, max_epochs=max_epochs_dynamics, max_epochs_since_update=5)
+
+    policy_trainer.train(document_rollouts=args.document_rollouts)
 
 
 if __name__ == "__main__":

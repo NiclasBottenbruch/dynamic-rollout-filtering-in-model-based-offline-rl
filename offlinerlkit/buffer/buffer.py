@@ -31,6 +31,24 @@ class ReplayBuffer:
 
         self.device = torch.device(device)
 
+        # per-dimension min/max/P1/P99 of observations and rewards
+        self.dimwise_stats_up_to_date = False
+        self.dimwise_stats = {
+            "observations": {
+                "min": None,
+                "max": None,
+                "p1": None,
+                "p99": None,
+            },
+            "rewards": {
+                "min": None,
+                "max": None,
+                "p1": None,
+                "p99": None,
+            }
+        }
+
+
     def add(
         self,
         obs: np.ndarray,
@@ -48,6 +66,7 @@ class ReplayBuffer:
 
         self._ptr = (self._ptr + 1) % self._max_size
         self._size = min(self._size + 1, self._max_size)
+        self.dimwise_stats_up_to_date = False
     
     def add_batch(
         self,
@@ -55,8 +74,13 @@ class ReplayBuffer:
         next_obss: np.ndarray,
         actions: np.ndarray,
         rewards: np.ndarray,
-        terminals: np.ndarray
+        terminals: np.ndarray,
+        update_dimwise_stats: bool = False
     ) -> None:
+        """
+            Add a batch of transitions to the replay buffer.
+            When buffer is full, it will overwrite oldest transitions (circular buffer).
+        """
         batch_size = len(obss)
         indexes = np.arange(self._ptr, self._ptr + batch_size) % self._max_size
 
@@ -68,8 +92,11 @@ class ReplayBuffer:
 
         self._ptr = (self._ptr + batch_size) % self._max_size
         self._size = min(self._size + batch_size, self._max_size)
-    
-    def load_dataset(self, dataset: Dict[str, np.ndarray]) -> None:
+        self.dimwise_stats_up_to_date = False
+        if update_dimwise_stats:
+            self.update_dimwise_stats()
+
+    def load_dataset(self, dataset: Dict[str, np.ndarray], update_dimwise_stats: bool = True) -> None:
         observations = np.array(dataset["observations"], dtype=self.obs_dtype)
         next_observations = np.array(dataset["next_observations"], dtype=self.obs_dtype)
         actions = np.array(dataset["actions"], dtype=self.action_dtype)
@@ -84,14 +111,36 @@ class ReplayBuffer:
 
         self._ptr = len(observations)
         self._size = len(observations)
-     
+
+        self.dimwise_stats_up_to_date = False
+        if update_dimwise_stats:
+            self.update_dimwise_stats()
+
     def normalize_obs(self, eps: float = 1e-3) -> Tuple[np.ndarray, np.ndarray]:
         mean = self.observations.mean(0, keepdims=True)
         std = self.observations.std(0, keepdims=True) + eps
         self.observations = (self.observations - mean) / std
         self.next_observations = (self.next_observations - mean) / std
         obs_mean, obs_std = mean, std
+        self.dimwise_stats_up_to_date = False
         return obs_mean, obs_std
+
+    def update_dimwise_stats(self, force: bool = False) -> Dict[str, Dict[str, np.ndarray]]:
+        if not self.dimwise_stats_up_to_date or force:
+            # Combine observations and next_observations for stats calculation
+            combined_obs = np.concatenate([self.observations, self.next_observations], axis=0) # shape: (2*size, obs_dim)
+            self.dimwise_stats["observations"]["min"] = combined_obs.min(0) # shape: (obs_dim,)
+            self.dimwise_stats["observations"]["max"] = combined_obs.max(0) # shape: (obs_dim,)
+            self.dimwise_stats["observations"]["p1"] = np.percentile(combined_obs, 1, axis=0) # shape: (obs_dim,)
+            self.dimwise_stats["observations"]["p99"] = np.percentile(combined_obs, 99, axis=0) # shape: (obs_dim,)
+
+            self.dimwise_stats["rewards"]["min"] = self.rewards.min(0) # shape: (1,)
+            self.dimwise_stats["rewards"]["max"] = self.rewards.max(0) # shape: (1,)
+            self.dimwise_stats["rewards"]["p1"] = np.percentile(self.rewards, 1, axis=0) # shape: (1,)
+            self.dimwise_stats["rewards"]["p99"] = np.percentile(self.rewards, 99, axis=0) # shape: (1,)
+
+            self.dimwise_stats_up_to_date = True
+        return self.dimwise_stats
 
     def sample(self, batch_size: int) -> Dict[str, torch.Tensor]:
 

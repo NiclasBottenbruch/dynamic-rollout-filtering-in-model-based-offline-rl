@@ -6,6 +6,7 @@ import argparse
 import datetime
 import warnings
 import numpy as np
+from numbers import Number
 
 from collections import defaultdict, deque
 from typing import Any, Dict, List, Optional, Sequence, TextIO, Tuple, Union
@@ -131,7 +132,7 @@ class JSONOutputHandler(KVWriter):
                 else:
                     # otherwise, a value is a numpy array, serialize as a list or nested lists
                     kvs[key] = value.tolist()
-        self.file.write(json.dumps(kvs) + '\n')
+        self.file.write(json.dumps(kvs, indent=3) + '\n')
         self.file.flush()
 
     def close(self) -> None:
@@ -258,10 +259,15 @@ class Logger(object):
         self._checkpoint_dir = os.path.join(self._dir, "checkpoint")
         self._model_dir = os.path.join(self._dir, "model")
         self._result_dir = os.path.join(self._dir, "result")
+        self.video_dir = os.path.join(self._dir, "video")
+        self.rollout_docs_dir = os.path.join(self._dir, "rollout_docs")
+
         os.mkdir(self._record_dir)
         os.mkdir(self._checkpoint_dir)
         os.mkdir(self._model_dir)
         os.mkdir(self._result_dir)
+        os.mkdir(self.video_dir)
+        os.mkdir(self.rollout_docs_dir)
     
     def _init_ouput_handlers(self, output_config: Dict) -> None:
         self._output_handlers = []
@@ -354,7 +360,7 @@ def make_log_dirs(
         for param_name in record_params:
             algo_name += f"&{param_name}={args[param_name]}"
     timestamp = datetime.datetime.now().strftime("%y-%m%d-%H%M%S")
-    exp_name = f"seed_{seed}&timestamp_{timestamp}"
+    exp_name = f"seed_{seed}_timestamp_{timestamp}"
     log_dirs = os.path.join(ROOT_DIR, task_name, algo_name, exp_name)
     os.makedirs(log_dirs)
     return log_dirs
