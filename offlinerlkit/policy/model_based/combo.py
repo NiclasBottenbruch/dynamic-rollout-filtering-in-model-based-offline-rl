@@ -39,7 +39,9 @@ class COMBOPolicy(CQLPolicy):
         cql_alpha_lr: float = 1e-4,
         num_repeart_actions:int = 10,
         uniform_rollout: bool = False,
-        rho_s: str = "mix"
+        rho_s: str = "mix",
+        dynamic_rollout_uncertainty_measures: list[str] = [],
+        dynamic_rollout_uncertainty_thresholds: list[float] = [] # if None, will not use this measure for filtering
     ) -> None:
         super().__init__(
             actor,
@@ -66,11 +68,16 @@ class COMBOPolicy(CQLPolicy):
         self._uniform_rollout = uniform_rollout
         self._rho_s = rho_s
 
+        # For dynamic rollout length
+        self._dynamic_rollout_uncertainty_measures = dynamic_rollout_uncertainty_measures
+        self._dynamic_rollout_uncertainty_thresholds = dynamic_rollout_uncertainty_thresholds
+        assert len(self._dynamic_rollout_uncertainty_measures) == len(self._dynamic_rollout_uncertainty_thresholds)
+
     def rollout(
         self,
         init_obss: np.ndarray,
         rollout_length: int,
-        monitor_uncertainty_stats: bool = False,
+        monitor_rollout: bool = False,
     ) -> Tuple[Dict[str, np.ndarray], Dict]:
         """
         Rollout the dynamics model for a given number of steps.
@@ -83,10 +90,11 @@ class COMBOPolicy(CQLPolicy):
         """
 
         num_transitions = 0
+        num_unfiltered_transitions = 0
         rewards_arr = np.array([])
         rollout_transitions = defaultdict(list)
 
-        uncertainty_monitor = defaultdict(list)
+        rollout_monitor = defaultdict(list)
 
         # rollout
         observations = init_obss
@@ -99,45 +107,55 @@ class COMBOPolicy(CQLPolicy):
                 )
             else:
                 actions = self.select_action(observations) # chooses action based on self.actor policy. select_action method is inherited from SACPolicy
-            next_observations, rewards, terminals, info = self.dynamics.step(observations, actions, measure_uncertainty=monitor_uncertainty_stats)
-            rollout_transitions["obss"].append(observations)
-            rollout_transitions["next_obss"].append(next_observations)
-            rollout_transitions["actions"].append(actions)
-            rollout_transitions["rewards"].append(rewards)
-            rollout_transitions["terminals"].append(terminals)
+            next_observations, rewards, terminals, info = self.dynamics.step(observations, actions, wanted_uncertainty_measures=self._dynamic_rollout_uncertainty_measures)
 
-            if monitor_uncertainty_stats: # just for monitoring purposes
+            mask = np.ones_like(rewards, dtype=bool).flatten() # init mask - determines which transitions and rollouts to keep
+
+            if self._dynamic_rollout_uncertainty_measures:
                 uncertainty_measures = info["uncertainty_measures"] # dict
-                uncertainty_modes = list(uncertainty_measures.keys())
 
-                uncertainty_monitor["obss"].append(observations)
-                uncertainty_monitor["next_obss_predicted"].append(next_observations)
-                uncertainty_monitor["actions"].append(actions)
-                uncertainty_monitor["step_nr"].append(np.array([step]*len(observations)))
+                # mask for data below uncertainty threshold
+                for m, t in zip(self._dynamic_rollout_uncertainty_measures, self._dynamic_rollout_uncertainty_thresholds):
+                    if t is not None and t:
+                        mask = mask & (uncertainty_measures[m] < t)
 
-                for uncertainty_mode in uncertainty_modes:
-                    uncertainty_monitor[uncertainty_mode].append(uncertainty_measures[uncertainty_mode])
+            rollout_transitions["obss"].append(observations[mask])
+            rollout_transitions["next_obss"].append(next_observations[mask])
+            rollout_transitions["actions"].append(actions[mask])
+            rollout_transitions["rewards"].append(rewards[mask])
+            rollout_transitions["terminals"].append(terminals[mask])
 
-            num_transitions += len(observations)
-            rewards_arr = np.append(rewards_arr, rewards.flatten())
+            if monitor_rollout: # just for monitoring purposes
+                rollout_monitor["obss"].append(observations[mask])
+                rollout_monitor["next_obss_predicted"].append(next_observations[mask])
+                rollout_monitor["actions"].append(actions[mask])
+                rollout_monitor["step_nr"].append(np.array([step]*len(observations[mask])))
 
-            nonterm_mask = (~terminals).flatten() # mask for non-terminated trajectories
-            if nonterm_mask.sum() == 0:
+                if self._dynamic_rollout_uncertainty_measures:
+                    # add uncertainty measures to monitor - only keep masked values (that are used as synthetic data)
+                    uncertainty_modes = list(uncertainty_measures.keys())
+                    for uncertainty_mode in uncertainty_modes:
+                        rollout_monitor[uncertainty_mode].append(uncertainty_measures[uncertainty_mode][mask])
+
+            num_transitions += len(observations[mask])
+            rewards_arr = np.append(rewards_arr, rewards[mask].flatten())
+            num_unfiltered_transitions += len(observations)
+
+            mask = mask & (~terminals).flatten() # additionally mask for non-terminated trajectories
+            if mask.sum() == 0:
                 break
-            observations = next_observations[nonterm_mask]
-
-            # here also mask out stopped trajectories based on ensemble discrepancy if specified
+            observations = next_observations[mask]
         
         for k, v in rollout_transitions.items(): # concatenate lists to np arrays
             rollout_transitions[k] = np.concatenate(v, axis=0)
 
-        rollout_info = {"num_transitions": num_transitions, "reward_mean": rewards_arr.mean()}
+        rollout_info = {"num_transitions": num_transitions, "reward_mean": rewards_arr.mean(), "filter_acceptance_ratio": num_transitions / num_unfiltered_transitions if num_unfiltered_transitions > 0 else 0}
 
-        if monitor_uncertainty_stats:
-            for k, v in uncertainty_monitor.items(): # concatenate lists to np arrays
-                    uncertainty_monitor[k] = np.concatenate(v, axis=0)
+        if monitor_rollout:
+            for k, v in rollout_monitor.items(): # concatenate lists to np arrays
+                    rollout_monitor[k] = np.concatenate(v, axis=0)
 
-            rollout_info["uncertainty_monitor"] = uncertainty_monitor
+            rollout_info["rollout_monitor"] = rollout_monitor
 
         return rollout_transitions, rollout_info
             
