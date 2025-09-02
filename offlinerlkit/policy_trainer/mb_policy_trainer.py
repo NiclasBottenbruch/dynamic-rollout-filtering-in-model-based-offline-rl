@@ -54,6 +54,12 @@ class MBPolicyTrainer:
         self.model_save_freq = model_save_freq
         self.lr_scheduler = lr_scheduler
 
+        if hasattr(self.policy, "dynamics"):
+            # dimwise stats for ood_measure
+            self.policy.dynamics.dimwise_distribution_support_stats = self.real_buffer.dimwise_stats
+
+        
+
     @staticmethod
     def encode_numpy(obj):
         if isinstance(obj, np.ndarray):
@@ -66,40 +72,38 @@ class MBPolicyTrainer:
         # create data with the model
         init_obss = self.real_buffer.sample(self._rollout_batch_size)["observations"].cpu().numpy() # sample from real buffer _rollout_batch_size observations shape: (batch_size, obs_dim)
         # print("init_obss shape: ", init_obss.shape)
-
-        # here select model to use for rollouts
         
         rollout_transitions, rollout_info = self.policy.rollout(init_obss, self._rollout_length, return_rollout_doc) # create model-based rollouts
 
-        print(f"rollout_transitions['obss'].shape: {rollout_transitions['obss'].shape}")
-                    # print(f"rollout_info: {rollout_info}")                    
-        print(f"rollout_transitions['next_obss'].shape: {rollout_transitions['next_obss'].shape}")
-        print(f"rollout_transitions['actions'].shape: {rollout_transitions['actions'].shape}")
-                    # print(f"rollout_transitions['rewards'].shape: {rollout_transitions['rewards'].shape}")
-                    # print(f"rollout_transitions['terminals'].shape: {rollout_transitions['terminals'].shape}")
-
+        # print(f"rollout_transitions['obss'].shape: {rollout_transitions['obss'].shape}")
+        # print(f"rollout_info: {rollout_info}")                    
+        # print(f"rollout_transitions['next_obss'].shape: {rollout_transitions['next_obss'].shape}")
+        # print(f"rollout_transitions['actions'].shape: {rollout_transitions['actions'].shape}")
+        # print(f"rollout_transitions['rewards'].shape: {rollout_transitions['rewards'].shape}")
+        # print(f"rollout_transitions['terminals'].shape: {rollout_transitions['terminals'].shape}")
+        
         self.fake_buffer.add_batch(**rollout_transitions) # add the rollouts to the fake buffer
 
         if log:
             self.logger.log(
-                "num rollout transitions: {}, reward mean: {:.4f}".\
-                format(rollout_info["num_transitions"], rollout_info["reward_mean"])
-                )
+                "num rollout transitions: {}, reward mean: {:.4f}, num_created_transitions: {} / {} ({:.1f}%)".\
+                format(rollout_info["num_transitions"], rollout_info["reward_mean"], len(rollout_transitions["obss"]), len(init_obss)*self._rollout_length, 
+                       100*len(rollout_transitions["obss"])/(len(init_obss)*self._rollout_length))
+            )
+
         if return_rollout_doc:
-            uncertainty_monitor = rollout_info["uncertainty_monitor"]
-            rollout_info.pop("uncertainty_monitor", None) # remove uncertainty monitor from rollout info to avoid logging it below
+            rollout_monitor = rollout_info["rollout_monitor"]
+            rollout_info.pop("rollout_monitor", None) # remove uncertainty monitor from rollout info to avoid logging it below
         if log:
             for _key, _value in rollout_info.items():
                 self.logger.logkv_mean("rollout_info/"+_key, _value)
         if return_rollout_doc:
-
-            for _key, _value in uncertainty_monitor.items():
-                if isinstance(_value, np.ndarray):
-                    print(f"uncertainty_monitor[{_key}] shape: {_value.shape}")
-                else:
-                    print(f"uncertainty_monitor[{_key}] is not a numpy array, type: {type(_value)}")
-
-            return uncertainty_monitor
+            # for _key, _value in rollout_monitor.items():
+            #     if isinstance(_value, np.ndarray):
+            #         print(f"rollout_monitor[{_key}] shape: {_value.shape}")
+            #     else:
+            #         print(f"rollout_monitor[{_key}] is not a numpy array, type: {type(_value)}")
+            return rollout_monitor
 
 
 
