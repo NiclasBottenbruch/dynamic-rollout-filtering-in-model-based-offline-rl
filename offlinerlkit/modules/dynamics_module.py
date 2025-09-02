@@ -45,7 +45,7 @@ class EnsembleDynamicsModel(nn.Module):
 
         self.num_ensemble = num_ensemble
         self.num_elites = num_elites
-        self._with_reward = with_reward
+        self.with_reward = with_reward
         self.device = torch.device(device)
 
         self.activation = activation()
@@ -63,18 +63,18 @@ class EnsembleDynamicsModel(nn.Module):
 
         self.output_layer = EnsembleLinear(
             hidden_dims[-1],
-            2 * (obs_dim + self._with_reward), # output mean and logvar (that's why 2*) for each obs dimension and potentially reward
+            2 * (obs_dim + self.with_reward), # output mean and logvar (that's why 2*) for each obs dimension and potentially reward
             num_ensemble,
             weight_decays[-1]
         )
 
         self.register_parameter(
             "max_logvar",
-            nn.Parameter(torch.ones(obs_dim + self._with_reward) * 0.5, requires_grad=True)
+            nn.Parameter(torch.ones(obs_dim + self.with_reward) * 0.5, requires_grad=True)
         )
         self.register_parameter(
             "min_logvar",
-            nn.Parameter(torch.ones(obs_dim + self._with_reward) * -10, requires_grad=True)
+            nn.Parameter(torch.ones(obs_dim + self.with_reward) * -10, requires_grad=True)
         )
 
         self.register_parameter( # indices of elite models in the ensemble
@@ -90,13 +90,13 @@ class EnsembleDynamicsModel(nn.Module):
             obs_action (np.ndarray): Input tensor of shape (batch_size, obs_dim + action_dim).
             (or (num_ensemble, batch_size, obs_dim + action_dim) if each ensemble has its own input)
         Returns:
-            Tuple[torch.Tensor, torch.Tensor]: Output mean and logvar tensors each of shape (num_ensemble, batch_size, obs_dim + self._with_reward).
+            Tuple[torch.Tensor, torch.Tensor]: Output mean and logvar tensors each of shape (num_ensemble, batch_size, obs_dim + self.with_reward).
         """
         obs_action = torch.as_tensor(obs_action, dtype=torch.float32).to(self.device)
         output = obs_action
         for layer in self.backbones:
             output = self.activation(layer(output)) # apply activation function after each ensemble linear hidden layer
-        output = self.output_layer(output) # [num_ensemble, batch_size, 2 * (obs_dim + self._with_reward)]
+        output = self.output_layer(output) # [num_ensemble, batch_size, 2 * (obs_dim + self.with_reward)]
         mean, logvar = torch.chunk(output, 2, dim=-1) # split output into 2 junks along last dim - mean and logvar
         logvar = soft_clamp(logvar, self.min_logvar, self.max_logvar)
         return mean, logvar
