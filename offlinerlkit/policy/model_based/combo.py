@@ -68,7 +68,7 @@ class COMBOPolicy(CQLPolicy):
         self._uniform_rollout = uniform_rollout
         self._rho_s = rho_s
 
-        # For dynamic rollout length
+        # For dynamic rollout length / dynamic rollout filtering based on uncertainty
         self._dynamic_rollout_uncertainty_measures = dynamic_rollout_uncertainty_measures
         self._dynamic_rollout_uncertainty_thresholds = dynamic_rollout_uncertainty_thresholds
         assert len(self._dynamic_rollout_uncertainty_measures) == len(self._dynamic_rollout_uncertainty_thresholds)
