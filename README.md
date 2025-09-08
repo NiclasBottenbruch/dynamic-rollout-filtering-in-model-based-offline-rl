@@ -1,5 +1,6 @@
 # Model-Based Offline Reinforcement Learning with Dynamic Filtering
 
+## Project description
 This code is based on the [Offline RL Kit](https://github.com/yihaosun1124/OfflineRL-Kit) by Yihao Sun et al.
 
 For my master's thesis (which is not publicly available), I integrated the [Trajectory Transformer](https://github.com/jannerm/trajectory-transformer) by Janner as a dynamics model
@@ -8,11 +9,13 @@ A drawback of the Trajectory Transformer, beside it's computational and memory r
 
 In this work, a simpler approach is used to increase the quality of synthetically generated data. Model rollouts, created with a feed-forward dynamics ensemble, are evaluated based on discrepancy- / uncertainty measures in the ensemble and stopped once a threshold is reached. <br>
 In contrast to models that learn a pessimistic MDP such as [MOPO](https://arxiv.org/pdf/2005.13239) and [MOReL](https://arxiv.org/pdf/2005.05951) which lower the reward of transitions explicitly based on ensemble discrepancy, this work uses ensemble uncertainty measures to dynamically stop rollouts completely. The aim is to filter out a small portion of the worst data samples, which make the model-based ORL algorithm require strong regularization measures for synthetic data and limit the rollout length. The filtered synthetic data is then used in the sota mborl algorithms [COMBO](https://arxiv.org/abs/2102.08363) and [MOBILE](https://proceedings.mlr.press/v202/sun23q.html).<br>
-See the adjusted rollout creation in [offlinerlkit/policy/model_based/combo.py](offlinerlkit/policy/model_based/combo.py) and [offlinerlkit/policy/model_based/combo.py](offlinerlkit/policy/model_based/combo.py).
-
+See the adjusted rollout creation in [offlinerlkit/policy/model_based/combo.py](offlinerlkit/policy/model_based/combo.py) and [offlinerlkit/policy/model_based/combo.py](offlinerlkit/policy/model_based/combo.py).<br>
 
 Several uncertailty measures have been added, which can bee seen in the `_measure_uncertainty` function in [offlinerl/algo/modelbase/ensemble_dynamics.py](`offlinerl/algo/modelbase/ensemble_dynamics.py`) to quantify uncertainty during synthetic trajectory generation. <br>
-Uncertainty measures that depend on both the the discrepancy between predictions in the ensemble as well as on the predicted standard deviation are among the best suited for dynamic filtering as rollout analysis such as [eval_discrepancy_criteria_hopper_med_combo.ipynb](eval_discrepancy_criteria_hopper_med_combo.ipynb) show.
+Uncertainty measures that depend on both the the discrepancy between predictions in the ensemble as well as on the predicted standard deviation are among the best suited for dynamic filtering as rollout analysis such as [eval_discrepancy_criteria_hopper_med_combo.ipynb](eval_discrepancy_criteria_hopper_med_combo.ipynb) show.<br>
+
+For beginners to learn about reinforcement learning, offline rl, model-based rl etc, I recommend the course [Deep Reinforcement Learning (CS 285)](https://rail.eecs.berkeley.edu/deeprlcourse/) at UC Berkeley by Sergey Levine.<br>
+An introduction to offline rl is given in [this paper](https://arxiv.org/pdf/2005.01643) by Levine et al.
 
 ## Supported algorithms
 - Model-free - as Benchmark
@@ -48,7 +51,7 @@ cd d4rl
 pip install -e .
 ```
 
-Then, install the OfflineRL-Kit!
+Then, install the adjusted OfflineRL-Kit!
 ```shell
 git clone https://github.com/NiclasBottenbruch/dynamic-rollout-filtering-in-model-based-offline-rl.git
 cd OfflineRL-Kit
