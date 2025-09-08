@@ -137,7 +137,13 @@ def plot_scatter_correlation(x, y, xlabel='X-axis', ylabel='Y-axis', title='Scat
     plt.show()
 
 
-def plot_filtering_analysis(doc, filter_indicator, bins=600, fig_size=(22, 9), filter_criterion:str=None):
+def plot_filtering_analysis(doc, filter_indicator, bins=600, fig_size=(22, 9), filter_criterion:str=None)->dict:
+    """
+    Plots the filtering analysis for model errors.
+    Left subplot: Histograms of model error L2 for all data, accepted data, and filtered data, with acceptance ratio curve.
+    Right subplot: Portion of filtered data as a function of model error threshold, with bars at specific thresholds.
+    Returns a dictionary with statistics (mean, median, P90, P95) for all, accepted, and filtered data.
+    """
     import matplotlib.pyplot as plt
     import numpy as np
 
@@ -200,6 +206,7 @@ def plot_filtering_analysis(doc, filter_indicator, bins=600, fig_size=(22, 9), f
         ha='center', va='top', fontsize=13, color='navy')
 
     # First plot: histograms (logarithmic bins)
+    data_stats = {}
     ax = axs[0]
     ax.hist(data_all[data_all > 0], bins=log_bins, alpha=1, label="All data", color="darkgray", density=True)
     ax.hist(data_0[data_0 > 0], bins=log_bins, alpha=0.5, label=f"Accepted, {portion_0:.2%}", color="green", density=True)
@@ -211,6 +218,9 @@ def plot_filtering_analysis(doc, filter_indicator, bins=600, fig_size=(22, 9), f
     ]:
         mean = np.mean(data)
         ax.axvline(mean, color=color, linestyle='--', linewidth=1, label=f"{label} Mean: {mean:.3f}")
+        data_stats[label] = {'mean': mean, 'median': np.median(data), 'P90': np.percentile(data, 90), 'P95': np.percentile(data, 95)}
+    data_stats["Accepted"]["portion"] = portion_0
+    data_stats["Filtered"]["portion"] = portion_1
 
     ax.set_xscale("log")
     ax.set_xlim(xmin, xmax)
@@ -243,6 +253,8 @@ def plot_filtering_analysis(doc, filter_indicator, bins=600, fig_size=(22, 9), f
 
     plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.show()
+
+    return data_stats
 
 
 def plot_model_error_all_vs_accepted_per_step(
@@ -374,4 +386,113 @@ def plot_model_error_all_vs_accepted_per_step(
     ax2.legend(loc='upper left')
 
     plt.tight_layout()
+    plt.show()
+
+def plot_model_error_vs_acceptance_ratio(doc, error_metrics:list, statistic: str="mean", plot_lower_bound=0.8, points=100, custom_criterion:tuple=None, target_acceptance_ratio=None)->dict:
+    """
+    Plots mean model error vs. acceptance ratio for different thresholds on a chosen uncertainty measure.
+    All curves are shown in a single plot, but only for acceptance ratio above the specified lower bound.
+    
+    Parameters:
+    - doc: dict containing model error and uncertainty measures
+    - error_metrics: list of keys in doc to be used as uncertainty measures
+    - statistic: string indicating the statistic to plot ("mean" or "px")
+    - plot_lower_bound: float in [0, 1], only plot acceptance ratios above this value
+    - points: int, number of threshold points to evaluate per metric (how finely to sample and plot)
+    - custom_criterion: optional tuple (ratio, model_error_value, label) to plot custom vertical/horizontal lines
+    1. ratio: float in [0, 1] for vertical line
+    2. model_error_value: float for horizontal line
+    3. label: str, label for the custom horizontal line
+
+    - target_acceptance_ratio: optional float in [0, 1], if provided, returns the criterion (threshold) that achieves acceptance ratio closest to this value for each metric
+    Returns:
+    - dict mapping each metric to the criterion achieving acceptance ratio closest to target_acceptance_ratio, if provided
+    """
+    criterion_for_target = {}
+    plt.figure(figsize=(12, 12))
+    for metric in error_metrics:
+        x = doc[metric]
+        y = doc["model_error_l2"]
+
+        # Sort x and take every 1/200th value as threshold (excluding min/max duplicates)
+        x_sorted = np.sort(x)
+        threshold_lower_bound = np.percentile(x, plot_lower_bound*100)
+        x_sorted = x_sorted[x_sorted >= threshold_lower_bound]
+        n = len(x_sorted)
+        step = max(1, n // points)
+        thresholds = x_sorted[::step]
+
+        stat_model_errors = []
+        acceptance_ratio = []
+
+        for t in thresholds:
+            mask = x < t
+            acceptance = np.mean(mask)
+            if np.any(mask):
+                if statistic == "mean":
+                    stat_model_error = np.mean(y[mask])
+                else:
+                    match = re.match(r"p(\d+)", statistic)
+                    if match:
+                        pct = int(match.group(1))
+                        stat_model_error = np.percentile(y[mask], pct)
+                    else:
+                        raise ValueError(f"Unknown statistic: {statistic} only 'mean' or percentile like 'p90'")
+                acceptance_ratio.append(acceptance)
+            else:
+                stat_model_error = np.nan
+                acceptance_ratio.append(acceptance)
+            stat_model_errors.append(stat_model_error)
+
+            if target_acceptance_ratio is not None:
+                if metric not in criterion_for_target or np.abs(criterion_for_target[metric]["acceptance"] - target_acceptance_ratio) > np.abs(acceptance - target_acceptance_ratio):
+                    criterion_for_target[metric] = {"acceptance": acceptance, f"{statistic}_model_error": stat_model_error, "threshold": t}
+
+        # Only plot for acceptance_ratio > plot_lower_bound
+        acceptance_ratio = np.array(acceptance_ratio)
+        stat_model_errors = np.array(stat_model_errors)
+        mask = acceptance_ratio > plot_lower_bound
+        plt.plot(acceptance_ratio[mask], stat_model_errors[mask], label=metric)
+
+    if custom_criterion is not None:
+        ratio, model_error_value, label = custom_criterion
+        plt.axvline(ratio, color="black", linewidth=0.8, label=f"Custom Ratio {ratio:.3f}")
+        plt.axhline(model_error_value, color="red", linewidth=0.8, label=label)
+
+    plt.xlabel("Acceptance Ratio")
+    plt.ylabel(f"{statistic.capitalize()} Model Error L2 of Accepted Samples")
+    plt.title(f"{statistic.capitalize()} Model Error L2 of Accepted Samples vs. Acceptance Ratio when Filtering with different Uncertainty Measures")
+    plt.grid(True, linestyle=":")
+    plt.tight_layout()
+    plt.legend()
+    plt.show()
+    return criterion_for_target
+
+
+def plot_simple_scatter_correlation(doc, x_key, y_key):
+    x = doc[x_key]
+    y = doc[y_key]
+
+    pearson_corr = np.corrcoef(x, y)[0, 1]
+    spearman_corr, _ = spearmanr(x, y)
+
+    plt.figure(figsize=(6, 6))
+    plt.scatter(x, y, s=0.5, alpha=0.5)
+    plt.xlabel(x_key)
+    plt.ylabel(y_key)
+    plt.title(f"Scatter plot: {x_key} vs {y_key}")
+    plt.xscale("log")
+    plt.yscale("log")
+    plt.tight_layout()
+
+    # Annotate correlations in bottom right
+    textstr = f"Pearson r: {pearson_corr:.3f}\nSpearman r: {spearman_corr:.3f}"
+    plt.gca().text(
+        0.98, 0.02, textstr,
+        transform=plt.gca().transAxes,
+        fontsize=10,
+        verticalalignment='bottom',
+        horizontalalignment='right',
+        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7)
+    )
     plt.show()
