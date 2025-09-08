@@ -31,7 +31,8 @@ class MOBILEPolicy(BasePolicy):
         deterministic_backup: bool = False,
         max_q_backup: bool = False,
         dynamic_rollout_uncertainty_measures: list[str] = [],
-        dynamic_rollout_uncertainty_thresholds: list[float] = [] # if None, will not use this measure for filtering
+        dynamic_rollout_uncertainty_thresholds: list[float] = [], # if None, will not use this measure for filtering
+        start_filtering_epoch: int = 25,
     ) -> None:
 
         super().__init__()
@@ -64,6 +65,7 @@ class MOBILEPolicy(BasePolicy):
         self._dynamic_rollout_uncertainty_measures = dynamic_rollout_uncertainty_measures
         self._dynamic_rollout_uncertainty_thresholds = dynamic_rollout_uncertainty_thresholds
         assert len(self._dynamic_rollout_uncertainty_measures) == len(self._dynamic_rollout_uncertainty_thresholds)
+        self._start_filtering_epoch = start_filtering_epoch
 
     def train(self) -> None:
         self.actor.train()
@@ -101,6 +103,7 @@ class MOBILEPolicy(BasePolicy):
     
     def rollout(
         self,
+        epoch: int,
         init_obss: np.ndarray,
         rollout_length: int,
         monitor_rollout: bool = False,
@@ -134,7 +137,11 @@ class MOBILEPolicy(BasePolicy):
                 uncertainty_measures = info["uncertainty_measures"] # dict
 
                 # mask for data below uncertainty threshold
-                for m, t in zip(self._dynamic_rollout_uncertainty_measures, self._dynamic_rollout_uncertainty_thresholds):
+                if epoch >= self._start_filtering_epoch: # only start filtering after some epochs
+                    thresholds = self._dynamic_rollout_uncertainty_thresholds
+                else:
+                    thresholds = [None]*len(self._dynamic_rollout_uncertainty_measures)
+                for m, t in zip(self._dynamic_rollout_uncertainty_measures, thresholds):
                     if t is not None and t:
                         mask = mask & (uncertainty_measures[m] < t)
 
@@ -168,7 +175,7 @@ class MOBILEPolicy(BasePolicy):
         for k, v in rollout_transitions.items(): # concatenate lists to np arrays
             rollout_transitions[k] = np.concatenate(v, axis=0)
 
-        rollout_info = {"num_transitions": num_transitions, "reward_mean": rewards_arr.mean(), "filter_acceptance_ratio": num_transitions / num_unfiltered_transitions if num_unfiltered_transitions > 0 else 0}
+        rollout_info = {"num_transitions": num_transitions, "reward_mean": rewards_arr.mean(), "dynamic_filtering_active": epoch >= self._start_filtering_epoch, "filter_acceptance_ratio": num_transitions / num_unfiltered_transitions if num_unfiltered_transitions > 0 else 0}
 
         if monitor_rollout:
             for k, v in rollout_monitor.items(): # concatenate lists to np arrays

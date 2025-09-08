@@ -40,7 +40,7 @@ walker2d-medium-expert-v2: rollout-length=1, cql-weight=5.0
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--algo-name", type=str, default="combo")
-    parser.add_argument("--task", type=str, default="hopper-medium-expert-v2")
+    parser.add_argument("--task", type=str, default="walker2d-medium-v2")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--actor-lr", type=float, default=1e-4)
     parser.add_argument("--critic-lr", type=float, default=3e-4)
@@ -52,7 +52,7 @@ def get_args():
     parser.add_argument("--target-entropy", type=int, default=None)
     parser.add_argument("--alpha-lr", type=float, default=1e-4) # usually 1e-4
 
-    parser.add_argument("--cql-weight", type=float, default=5.0) # adjust this
+    parser.add_argument("--cql-weight", type=float, default=4.75) # adjust this
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--max-q-backup", type=bool, default=False)
     parser.add_argument("--deterministic-backup", type=bool, default=True)
@@ -70,11 +70,15 @@ def get_args():
     parser.add_argument("--n-elites", type=int, default=5)
     parser.add_argument("--rollout-freq", type=int, default=1000)
     parser.add_argument("--rollout-batch-size", type=int, default=50000)   # usually 50k
-    parser.add_argument("--rollout-length", type=int, default=10)            # adjust this usually 5
+    parser.add_argument("--rollout-length", type=int, default=2)            # adjust this usually 5
     parser.add_argument("--model-retain-epochs", type=int, default=5)
     parser.add_argument("--real-ratio", type=float, default=0.5)                                # usually 0.5
-    parser.add_argument("--load-dynamics-path", type=str, default="log/hopper-medium-expert-v2/combo/seed_1_timestamp_25-0824-110711/model") #"log/hopper-medium-expert-v2/combo/seed_1_timestamp_24-0921-221325/model") # usually None
+    parser.add_argument("--load-dynamics-path", type=str, default="log/walker2d-medium-v2/combo/seed_1_timestamp_25-0904-155948_benchmark/model") #"log/halfcheetah-medium-v2/combo/seed_1_timestamp_25-0903-112706_benchmark/model") # usually None
     parser.add_argument("--document-rollouts", type=bool, default=True)
+    parser.add_argument("--dyn-rollout-uncertainty-measures", type=list, default=["aleatoric", "dimensionwise_diff_with_std", "pairwise-diff", "pairwise-diff_with_std", "ensemble_std", "dimensionwise_ood_measure"])
+    parser.add_argument("--dyn-rollout-uncertainty-thresholds", type=list, default=[6.3, 16.0, None, None, None, None]) # if None, will not use this measure for filtering
+    parser.add_argument("--start-filtering-epoch", type=int, default=50) # start filtering after this epoch
+    parser.add_argument("--expected-acceptance-rate", type=float, default=0.985) # 1 for unfiltered (used to specify synthetic buffer size)
 
     parser.add_argument("--max-epochs-dynamics", type=int, default=100)    # adjust this usually 80
     parser.add_argument("--epoch", type=int, default=500)                     # adjust this
@@ -200,7 +204,10 @@ def train(args=get_args()):
         cql_alpha_lr=args.cql_alpha_lr,
         num_repeart_actions=args.num_repeat_actions,
         uniform_rollout=args.uniform_rollout,
-        rho_s=args.rho_s
+        rho_s=args.rho_s,
+        dynamic_rollout_uncertainty_measures=args.dyn_rollout_uncertainty_measures,
+        dynamic_rollout_uncertainty_thresholds=args.dyn_rollout_uncertainty_thresholds,
+        start_filtering_epoch=args.start_filtering_epoch,
     )
 
     # create buffer
@@ -216,7 +223,7 @@ def train(args=get_args()):
 
     # buffer for synthetic data generated using dynamics model
     fake_buffer = ReplayBuffer(
-        buffer_size=args.rollout_batch_size*args.rollout_length*args.model_retain_epochs,
+        buffer_size=int(args.rollout_batch_size*args.rollout_length*args.model_retain_epochs*args.expected_acceptance_rate), # size of buffer is num ob transitions of last model_retain_epochs epochs
         obs_shape=args.obs_shape,
         obs_dtype=np.float32,
         action_dim=args.action_dim,

@@ -66,14 +66,14 @@ class MBPolicyTrainer:
             return obj.tolist()
         raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 
-    def create_synthetic_data(self, log=True, return_rollout_doc=False) -> None:
+    def create_synthetic_data(self, epoch: int, log=True, return_rollout_doc=False) -> None:
         """ Create synthetic data using the learned dynamics model and the policy. Add them to the fake buffer """
 
         # create data with the model
         init_obss = self.real_buffer.sample(self._rollout_batch_size)["observations"].cpu().numpy() # sample from real buffer _rollout_batch_size observations shape: (batch_size, obs_dim)
         # print("init_obss shape: ", init_obss.shape)
-        
-        rollout_transitions, rollout_info = self.policy.rollout(init_obss, self._rollout_length, return_rollout_doc) # create model-based rollouts
+
+        rollout_transitions, rollout_info = self.policy.rollout(epoch, init_obss, self._rollout_length, return_rollout_doc) # create model-based rollouts
 
         # print(f"rollout_transitions['obss'].shape: {rollout_transitions['obss'].shape}")
         # print(f"rollout_info: {rollout_info}")                    
@@ -86,8 +86,8 @@ class MBPolicyTrainer:
 
         if log:
             self.logger.log(
-                "num rollout transitions: {}, reward mean: {:.4f}, num_created_transitions: {} / {} ({:.1f}%)".\
-                format(rollout_info["num_transitions"], rollout_info["reward_mean"], len(rollout_transitions["obss"]), len(init_obss)*self._rollout_length, 
+                "num rollout transitions: {}, reward mean: {:.4f}, dynamic_filtering_active: {}, num_created_transitions: {} / {} ({:.1f}%)".\
+                format(rollout_info["num_transitions"], rollout_info["reward_mean"], rollout_info["dynamic_filtering_active"], len(rollout_transitions["obss"]), len(init_obss)*self._rollout_length, 
                        100*len(rollout_transitions["obss"])/(len(init_obss)*self._rollout_length))
             )
 
@@ -122,7 +122,7 @@ class MBPolicyTrainer:
                 if num_timesteps % self._rollout_freq == 0:
                     # create synthetic data
                     log_rollout_doc = True if (document_rollouts and e % self.eval_create_video_freq == 0 and self.eval_create_video_freq > 0) else False
-                    rollout_doc = self.create_synthetic_data(return_rollout_doc=log_rollout_doc)
+                    rollout_doc = self.create_synthetic_data(epoch=e, return_rollout_doc=log_rollout_doc)
 
                     if log_rollout_doc:
                         # write rollout doc to file

@@ -71,13 +71,14 @@ def get_args():
     parser.add_argument("--num-samples", type=int, default=10)
     parser.add_argument("--model-retain-epochs", type=int, default=5)
     parser.add_argument("--real-ratio", type=float, default=0.05)
-    parser.add_argument("--load-dynamics-path", type=str, default="log/walker2d-medium-v2/mobile&penalty_coef=0.5&rollout_length=5&real_ratio=0.05/seed_1_timestamp_25-0906-122102/model")
+    parser.add_argument("--load-dynamics-path", type=str, default="log/walker2d-medium-v2/combo/seed_1_timestamp_25-0904-155948_benchmark/model")
     parser.add_argument("--document-rollouts", type=bool, default=True)
     parser.add_argument("--dyn-rollout-uncertainty-measures", type=list, default=["aleatoric", "dimensionwise_diff_with_std", "pairwise-diff", "pairwise-diff_with_std", "ensemble_std", "dimensionwise_ood_measure"])
-    parser.add_argument("--dyn-rollout-uncertainty-thresholds", type=list, default=[6.3, 16.0, None, None, None, None]) # if None, will not use this measure for filtering
-    parser.add_argument("--expected-acceptance-rate", type=float, default=0.985) # 1 for unfiltered (used to specify synthetic buffer size)
+    parser.add_argument("--dyn-rollout-uncertainty-thresholds", type=list, default=[None, 18.5, None, None, None, None]) # if None, will not use this measure for filtering
+    parser.add_argument("--start-filtering-epoch", type=int, default=50) # start filtering after this epoch
+    parser.add_argument("--expected-acceptance-rate", type=float, default=0.97) # 1 for unfiltered (used to specify synthetic buffer size)
 
-    parser.add_argument("--epoch", type=int, default=1000)
+    parser.add_argument("--epoch", type=int, default=1500)
     parser.add_argument("--step-per-epoch", type=int, default=1000)
     parser.add_argument("--eval_episodes", type=int, default=10)
     parser.add_argument("--model-save-freq", type=int, default=50)          # adjust this
@@ -196,8 +197,9 @@ def train(args=get_args()):
         num_samples=args.num_samples,
         deterministic_backup=args.deterministic_backup,
         max_q_backup=args.max_q_backup,
-                dynamic_rollout_uncertainty_measures=args.dyn_rollout_uncertainty_measures,
-        dynamic_rollout_uncertainty_thresholds=args.dyn_rollout_uncertainty_thresholds
+        dynamic_rollout_uncertainty_measures=args.dyn_rollout_uncertainty_measures,
+        dynamic_rollout_uncertainty_thresholds=args.dyn_rollout_uncertainty_thresholds,
+        start_filtering_epoch=args.start_filtering_epoch,
     )
 
     # create buffer
