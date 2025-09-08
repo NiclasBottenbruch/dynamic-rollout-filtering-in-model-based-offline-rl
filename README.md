@@ -1,6 +1,6 @@
 # Model-Based Offline Reinforcement Learning with Dynamic Filtering
 
-This code is baded on the [Offline RL Kit](https://github.com/yihaosun1124/OfflineRL-Kit) by Yihao Sun et al.
+This code is based on the [Offline RL Kit](https://github.com/yihaosun1124/OfflineRL-Kit) by Yihao Sun et al.
 
 For my master's thesis (which is not publicly available), I integrated the [Trajectory Transformer](https://github.com/jannerm/trajectory-transformer) by Janner as a dynamics model
 in model-based offline reinforcement learning which creates trajectories of observations, actions and rewards jointly by maximizing the trajectory likelihood using beam search to mitigate the error accumulation of an autoregressive step-by-step process. <br>
@@ -8,6 +8,7 @@ A drawback of the Trajectory Transformer, beside it's computational and memory r
 
 In this work, a simpler approach is used to increase the quality of synthetically generated data. Model rollouts, created with a feed-forward dynamics ensemble, are evaluated based on discrepancy- / uncertainty measures in the ensemble and stopped once a threshold is reached. <br>
 In contrast to models that learn a pessimistic MDP such as [MOPO](https://arxiv.org/pdf/2005.13239) and [MOReL](https://arxiv.org/pdf/2005.05951) which lower the reward of transitions explicitly based on ensemble discrepancy, this work uses ensemble uncertainty measures to dynamically stop rollouts completely. The aim is to filter out a small portion of the worst data samples, which make the model-based ORL algorithm require strong regularization measures for synthetic data and limit the rollout length. The filtered synthetic data is then used in the sota mborl algorithms [COMBO](https://arxiv.org/abs/2102.08363) and [MOBILE](https://proceedings.mlr.press/v202/sun23q.html).<br>
+See the adjusted rollout creation in [offlinerlkit/policy/model_based/combo.py](offlinerlkit/policy/model_based/combo.py) and [offlinerlkit/policy/model_based/combo.py](offlinerlkit/policy/model_based/combo.py).
 
 
 Several uncertailty measures have been added, which can bee seen in the `_measure_uncertainty` function in [offlinerl/algo/modelbase/ensemble_dynamics.py](`offlinerl/algo/modelbase/ensemble_dynamics.py`) to quantify uncertainty during synthetic trajectory generation. <br>
