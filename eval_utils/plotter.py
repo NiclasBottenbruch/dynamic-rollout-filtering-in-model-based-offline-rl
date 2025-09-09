@@ -496,3 +496,35 @@ def plot_simple_scatter_correlation(doc, x_key, y_key):
         bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7)
     )
     plt.show()
+
+def boxplot_rewards(reward_lists, labels, title, y_label="Episode Reward"):
+
+    plt.figure(figsize=(8, 6))
+    box = plt.boxplot(reward_lists, tick_labels=labels, patch_artist=True)
+
+    # Set all box colors to light gray
+    for patch in box['boxes']:
+        patch.set_facecolor('#dddddd')
+
+    # Mark the 10th percentile, mean, and median for each dataset
+    for i, rewards in enumerate(reward_lists):
+        perc10 = np.percentile(rewards, 10)
+        mean = np.mean(rewards)
+        median = np.median(rewards)
+        plt.plot(i + 1, perc10, marker='_', color='red', markersize=25, label='10th percentile' if i == 0 else "")
+        plt.plot(i + 1, mean, marker='_', color='blue', markersize=25, label='Mean' if i == 0 else "")
+        plt.plot(i + 1, median, marker='_', color='orange', markersize=25, label='Median' if i == 0 else "")
+
+    plt.ylabel(y_label)
+    plt.title(title)
+    plt.xticks(rotation=15)
+    plt.grid(axis='y')
+
+    # Only show one legend entry for each marker
+    handles, legend_labels = plt.gca().get_legend_handles_labels()
+    unique = dict()
+    for h, l in zip(handles, legend_labels):
+        if l not in unique and l != "":
+            unique[l] = h
+    plt.legend(unique.values(), unique.keys())
+    plt.show()
