@@ -84,6 +84,33 @@ def qlearning_dataset(env, dataset=None, terminate_on_end=False, **kwargs):
     }
 
 
+def sample_subset(dataset: dict, p: float) -> dict:
+    """
+    Sample a subset of the dataset with a given proportion p
+    
+    Args:
+        dataset (dict): The dataset to sample from with i keys. Each key is a numpy array of shape (n, d_i)
+        p (float): The proportion of the dataset to sample (0 < p <= 1)
+
+    Returns:
+        dict: A subset of the dataset with the same keys as the input dataset. Each key is a numpy array of shape (p * n, d_i)
+    """
+    if not 0 < p <= 1:
+        raise ValueError("The proportion p must be between 0 and 1 (0 < p <= 1)")
+    
+    subset_size = int(p * dataset[list(dataset.keys())[0]].shape[0])
+
+    # Generate random indexes to select the subset
+    index = np.random.choice(dataset[list(dataset.keys())[0]].shape[0], subset_size, replace=False)
+
+    subset = {}
+    
+    for key in dataset.keys():
+        subset[key] = dataset[key][index]
+
+    return subset 
+
+
 class SequenceDataset(torch.utils.data.Dataset):
     def __init__(self, dataset, max_len, max_ep_len=1000, device="cpu"):
         super().__init__()

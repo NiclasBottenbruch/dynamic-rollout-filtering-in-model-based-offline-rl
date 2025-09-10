@@ -9,3 +9,4 @@
 **/.vscode
 **/_log
 .git_orl-kit_repo
+!requirements.txt

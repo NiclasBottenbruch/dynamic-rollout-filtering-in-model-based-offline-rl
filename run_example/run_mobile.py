@@ -34,13 +34,21 @@ walker2d-medium-replay-v2: rollout-length=1, penalty-coef=0.5
 halfcheetah-medium-expert-v2: rollout-length=5, penalty-coef=2.0
 hopper-medium-expert-v2: rollout-length=5, penalty-coef=1.5
 walker2d-medium-expert-v2: rollout-length=1, penalty-coef=1.5
+
+
+tried out thresholds for filtering (set in dyn-rollout-uncertainty-thresholds):
+halfcheetah-medium-v2: aleatoric <= 4.7, dimensionwise_diff_with_std <= 18
+hopper-medium-v2: dimensionwise_diff_with_std <= 1.7
+walker2d-medium-v2: dimensionwise_diff_with_std <= 18.5
+
+additional increase in rollout-length or adjustment of penalty-coef may be beneficial if using filtering
 """
 
 
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--algo-name", type=str, default="mobile")
-    parser.add_argument("--task", type=str, default="walker2d-medium-expert-v2")
+    parser.add_argument("--task", type=str, default="halfcheetah-medium-v2")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--actor-lr", type=float, default=1e-4)
     parser.add_argument("--critic-lr", type=float, default=3e-4)
@@ -48,7 +56,7 @@ def get_args():
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--tau", type=float, default=0.005)
     parser.add_argument("--alpha", type=float, default=0.2)
-    parser.add_argument("--auto-alpha", type=bool, default=True)
+    parser.add_argument("--auto-alpha", type=bool, default=True) # adjust this
     parser.add_argument("--target-entropy", type=int, default=None)
     parser.add_argument("--alpha-lr", type=float, default=1e-4)
 
@@ -59,23 +67,30 @@ def get_args():
 
     parser.add_argument("--dynamics-lr", type=float, default=1e-3)
     parser.add_argument("--max-epochs-since-update", type=int, default=5)
-    parser.add_argument("--dynamics-max-epochs", type=int, default=30)
+    parser.add_argument("--dynamics-max-epochs", type=int, default=100)
     parser.add_argument("--dynamics-hidden-dims", type=int, nargs='*', default=[200, 200, 200, 200])
     parser.add_argument("--dynamics-weight-decay", type=float, nargs='*', default=[2.5e-5, 5e-5, 7.5e-5, 7.5e-5, 1e-4])
     parser.add_argument("--n-ensemble", type=int, default=7)
     parser.add_argument("--n-elites", type=int, default=5)
     parser.add_argument("--rollout-freq", type=int, default=1000)
     parser.add_argument("--rollout-batch-size", type=int, default=50000)
-    parser.add_argument("--rollout-length", type=int, default=1)
-    parser.add_argument("--penalty-coef", type=float, default=1.5)
+    parser.add_argument("--rollout-length", type=int, default=5) # adjust this
+    parser.add_argument("--penalty-coef", type=float, default=0.5) # adjust this
     parser.add_argument("--num-samples", type=int, default=10)
     parser.add_argument("--model-retain-epochs", type=int, default=5)
     parser.add_argument("--real-ratio", type=float, default=0.05)
     parser.add_argument("--load-dynamics-path", type=str, default=None)
+    parser.add_argument("--document-rollouts", type=bool, default=True) # whether to monitor rollout quality using uncertainty measures
+    parser.add_argument("--dyn-rollout-uncertainty-measures", type=list, default=["aleatoric", "dimensionwise_diff_with_std", "pairwise-diff", "pairwise-diff_with_std", "ensemble_std", "dimensionwise_ood_measure"])
+    parser.add_argument("--dyn-rollout-uncertainty-thresholds", type=list, default=[None, None, None, None, None, None]) # if None, will not use this measure for filtering, only for monitoring if document-rollouts is set. List must be same length as dyn-rollout-uncertainty-measures
+    parser.add_argument("--start-filtering-epoch", type=int, default=50)
+    parser.add_argument("--expected-acceptance-rate", type=float, default=1) # 1 for unfiltered (used to specify synthetic buffer size)
 
-    parser.add_argument("--epoch", type=int, default=3000)
+    parser.add_argument("--epoch", type=int, default=1500)
     parser.add_argument("--step-per-epoch", type=int, default=1000)
     parser.add_argument("--eval_episodes", type=int, default=10)
+    parser.add_argument("--model-save-freq", type=int, default=50)
+    parser.add_argument("--eval-create-video-freq", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--lr-scheduler", type=bool, default=True)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
@@ -101,6 +116,7 @@ def train(args=get_args()):
         r_mean, r_std = dataset["rewards"].mean(), dataset["rewards"].std()
         dataset["rewards"] = (dataset["rewards"] - r_mean) / (r_std + 1e-3)
 
+    print(f"device: {args.device}")
     args.obs_shape = env.observation_space.shape
     args.action_dim = np.prod(env.action_space.shape)
     args.max_action = env.action_space.high[0]
@@ -188,7 +204,10 @@ def train(args=get_args()):
         penalty_coef=args.penalty_coef,
         num_samples=args.num_samples,
         deterministic_backup=args.deterministic_backup,
-        max_q_backup=args.max_q_backup
+        max_q_backup=args.max_q_backup,
+        dynamic_rollout_uncertainty_measures=args.dyn_rollout_uncertainty_measures,
+        dynamic_rollout_uncertainty_thresholds=args.dyn_rollout_uncertainty_thresholds,
+        start_filtering_epoch=args.start_filtering_epoch,
     )
 
     # create buffer
@@ -203,7 +222,7 @@ def train(args=get_args()):
     real_buffer.load_dataset(dataset)
 
     fake_buffer = ReplayBuffer(
-        buffer_size=args.rollout_batch_size*args.rollout_length*args.model_retain_epochs,
+        buffer_size=int(args.rollout_batch_size*args.rollout_length*args.model_retain_epochs*args.expected_acceptance_rate),
         obs_shape=args.obs_shape,
         obs_dtype=np.float32,
         action_dim=args.action_dim,
@@ -236,6 +255,8 @@ def train(args=get_args()):
         batch_size=args.batch_size,
         real_ratio=args.real_ratio,
         eval_episodes=args.eval_episodes,
+        eval_create_video_freq=args.eval_create_video_freq,
+        model_save_freq=args.model_save_freq,
         lr_scheduler=lr_scheduler
     )
 
@@ -248,7 +269,7 @@ def train(args=get_args()):
             max_epochs=args.dynamics_max_epochs
         )
     
-    policy_trainer.train()
+    policy_trainer.train(document_rollouts=args.document_rollouts)
 
 
 if __name__ == "__main__":

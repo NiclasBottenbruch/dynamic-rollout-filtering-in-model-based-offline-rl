@@ -24,3 +24,8 @@ class BasePolicy(nn.Module):
     
     def learn(self, batch: Dict) -> Dict[str, float]:
         raise NotImplementedError
+    
+    def __call__(self, *args, **kwargs):
+        # Policy as actor
+        return self.select_action(*args, **kwargs)
+    

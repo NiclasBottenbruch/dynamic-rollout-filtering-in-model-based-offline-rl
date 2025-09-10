@@ -34,25 +34,33 @@ walker2d-medium-replay-v2: rollout-length=1, cql-weight=0.5
 halfcheetah-medium-expert-v2: rollout-length=5, cql-weight=5.0
 hopper-medium-expert-v2: rollout-length=5, cql-weight=5.0
 walker2d-medium-expert-v2: rollout-length=1, cql-weight=5.0
+
+
+tried out thresholds for filtering (set in dyn-rollout-uncertainty-thresholds):
+halfcheetah-medium-v2: aleatoric <= 4.7, dimensionwise_diff_with_std <= 18
+hopper-medium-v2: aleatoric <= 0.35, dimensionwise_diff_with_std <= 0.4
+walker2d-medium-v2: aleatoric <= 6.3, dimensionwise_diff_with_std <= 16
+
+additional reductions in cql-weight or increase in rollout-length may be beneficial if using filtering
 """
 
 
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--algo-name", type=str, default="combo")
-    parser.add_argument("--task", type=str, default="hopper-medium-expert-v2")
+    parser.add_argument("--task", type=str, default="hopper-medium-v2")
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--actor-lr", type=float, default=1e-4)
     parser.add_argument("--critic-lr", type=float, default=3e-4)
-    parser.add_argument("--hidden-dims", type=int, nargs='*', default=[256, 256, 256]) # usually 256 in each layer
+    parser.add_argument("--hidden-dims", type=int, nargs='*', default=[256, 256, 256])
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--tau", type=float, default=0.005)
     parser.add_argument("--alpha", type=float, default=0.2)
     parser.add_argument("--auto-alpha", default=True)
     parser.add_argument("--target-entropy", type=int, default=None)
-    parser.add_argument("--alpha-lr", type=float, default=1e-4) # usually 1e-4
+    parser.add_argument("--alpha-lr", type=float, default=1e-4)
 
-    parser.add_argument("--cql-weight", type=float, default=5.0) # adjust this
+    parser.add_argument("--cql-weight", type=float, default=5) # adjust this
     parser.add_argument("--temperature", type=float, default=1.0)
     parser.add_argument("--max-q-backup", type=bool, default=False)
     parser.add_argument("--deterministic-backup", type=bool, default=True)
@@ -63,26 +71,30 @@ def get_args():
     parser.add_argument("--uniform-rollout", type=bool, default=False)
     parser.add_argument("--rho-s", type=str, default="mix", choices=["model", "mix"])
 
-    parser.add_argument("--dynamics-lr", type=float, default=1e-3)        # usually 1e-3
-    parser.add_argument("--dynamics-hidden-dims", type=int, nargs='*', default=[200, 200, 200, 200]) # usually 200 in each layer
+    parser.add_argument("--dynamics-lr", type=float, default=1e-3)
+    parser.add_argument("--dynamics-hidden-dims", type=int, nargs='*', default=[200, 200, 200, 200])
     parser.add_argument("--dynamics-weight-decay", type=float, nargs='*', default=[2.5e-5, 5e-5, 7.5e-5, 7.5e-5, 1e-4])
     parser.add_argument("--n-ensemble", type=int, default=7)
     parser.add_argument("--n-elites", type=int, default=5)
     parser.add_argument("--rollout-freq", type=int, default=1000)
-    parser.add_argument("--rollout-batch-size", type=int, default=50000)   # usually 50k
-    parser.add_argument("--rollout-length", type=int, default=10)            # adjust this usually 5
+    parser.add_argument("--rollout-batch-size", type=int, default=50000)
+    parser.add_argument("--rollout-length", type=int, default=5)            # adjust this
     parser.add_argument("--model-retain-epochs", type=int, default=5)
-    parser.add_argument("--real-ratio", type=float, default=0.5)                                # usually 0.5
-    parser.add_argument("--load-dynamics-path", type=str, default="log/hopper-medium-expert-v2/combo/seed_1_timestamp_25-0824-110711/model") #"log/hopper-medium-expert-v2/combo/seed_1_timestamp_24-0921-221325/model") # usually None
-    parser.add_argument("--document-rollouts", type=bool, default=True)
+    parser.add_argument("--real-ratio", type=float, default=0.5)
+    parser.add_argument("--load-dynamics-path", type=str, default=None) # path to load dynamics model directory
+    parser.add_argument("--document-rollouts", type=bool, default=True) # whether to monitor rollout quality using uncertainty measures
+    parser.add_argument("--dyn-rollout-uncertainty-measures", type=list, default=["aleatoric", "dimensionwise_diff_with_std", "pairwise-diff", "pairwise-diff_with_std", "ensemble_std", "dimensionwise_ood_measure"])
+    parser.add_argument("--dyn-rollout-uncertainty-thresholds", type=list, default=[None, None, None, None, None, None]) # if None, will not use this measure for filtering, only for monitoring if document-rollouts is set. List must be same length as dyn-rollout-uncertainty-measures
+    parser.add_argument("--start-filtering-epoch", type=int, default=25) # start filtering after this epoch (only effective if dyn-rollout-uncertainty-thresholds has at least one non-None element)
+    parser.add_argument("--expected-acceptance-rate", type=float, default=1) # 1 for unfiltered (used to specify synthetic buffer size)
 
-    parser.add_argument("--max-epochs-dynamics", type=int, default=100)    # adjust this usually 80
-    parser.add_argument("--epoch", type=int, default=500)                     # adjust this
+    parser.add_argument("--max-epochs-dynamics", type=int, default=100)
+    parser.add_argument("--epoch", type=int, default=500)
     parser.add_argument("--step-per-epoch", type=int, default=1000)
-    parser.add_argument("--model-save-freq", type=int, default=25)          # adjust this
+    parser.add_argument("--model-save-freq", type=int, default=25)
     parser.add_argument("--eval_episodes", type=int, default=10)
-    parser.add_argument("--eval-create-video-freq", type=int, default=25)   # adjust this
-    parser.add_argument("--batch-size", type=int, default=256)                 # usually 256
+    parser.add_argument("--eval-create-video-freq", type=int, default=25)
+    parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
 
     return parser.parse_args()
@@ -200,7 +212,10 @@ def train(args=get_args()):
         cql_alpha_lr=args.cql_alpha_lr,
         num_repeart_actions=args.num_repeat_actions,
         uniform_rollout=args.uniform_rollout,
-        rho_s=args.rho_s
+        rho_s=args.rho_s,
+        dynamic_rollout_uncertainty_measures=args.dyn_rollout_uncertainty_measures,
+        dynamic_rollout_uncertainty_thresholds=args.dyn_rollout_uncertainty_thresholds,
+        start_filtering_epoch=args.start_filtering_epoch,
     )
 
     # create buffer
@@ -216,7 +231,7 @@ def train(args=get_args()):
 
     # buffer for synthetic data generated using dynamics model
     fake_buffer = ReplayBuffer(
-        buffer_size=args.rollout_batch_size*args.rollout_length*args.model_retain_epochs,
+        buffer_size=int(args.rollout_batch_size*args.rollout_length*args.model_retain_epochs*args.expected_acceptance_rate), # size of buffer is num ob transitions of last model_retain_epochs epochs
         obs_shape=args.obs_shape,
         obs_dtype=np.float32,
         action_dim=args.action_dim,

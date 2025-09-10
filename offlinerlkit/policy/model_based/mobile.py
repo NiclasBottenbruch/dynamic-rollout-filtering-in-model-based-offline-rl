@@ -29,7 +29,10 @@ class MOBILEPolicy(BasePolicy):
         penalty_coef: float = 1.0,
         num_samples: int = 10,
         deterministic_backup: bool = False,
-        max_q_backup: bool = False
+        max_q_backup: bool = False,
+        dynamic_rollout_uncertainty_measures: list[str] = [],
+        dynamic_rollout_uncertainty_thresholds: list[float] = [], # if None, will not use this measure for filtering
+        start_filtering_epoch: int = 25,
     ) -> None:
 
         super().__init__()
@@ -55,8 +58,14 @@ class MOBILEPolicy(BasePolicy):
 
         self._penalty_coef = penalty_coef
         self._num_samples = num_samples
-        self._deteterministic_backup = deterministic_backup
+        self._deterministic_backup = deterministic_backup
         self._max_q_backup = max_q_backup
+
+        # For dynamic rollout length / dynamic rollout filtering based on uncertainty
+        self._dynamic_rollout_uncertainty_measures = dynamic_rollout_uncertainty_measures
+        self._dynamic_rollout_uncertainty_thresholds = dynamic_rollout_uncertainty_thresholds
+        assert len(self._dynamic_rollout_uncertainty_measures) == len(self._dynamic_rollout_uncertainty_thresholds)
+        self._start_filtering_epoch = start_filtering_epoch
 
     def train(self) -> None:
         self.actor.train()
@@ -94,41 +103,89 @@ class MOBILEPolicy(BasePolicy):
     
     def rollout(
         self,
+        epoch: int,
         init_obss: np.ndarray,
-        rollout_length: int
+        rollout_length: int,
+        monitor_rollout: bool = False,
     ) -> Tuple[Dict[str, np.ndarray], Dict]:
+        """
+        Rollout the dynamics model for a given number of steps.
+
+        Args:
+            init_obss (np.ndarray): The initial observations to rollout from.
+            rollout_length (int): The number of steps to rollout the dynamics model.
+        Returns:
+            Tuple[Dict[str, np.ndarray], Dict]: A tuple containing the rollout transitions and the rollout statistics.
+        """
 
         num_transitions = 0
+        num_unfiltered_transitions = 0
         rewards_arr = np.array([])
         rollout_transitions = defaultdict(list)
 
+        rollout_monitor = defaultdict(list)
+
         # rollout
         observations = init_obss
-        for _ in range(rollout_length):
-            actions = self.select_action(observations)
-            next_observations, rewards, terminals, info = self.dynamics.step(observations, actions)
+        for step in range(rollout_length):
+            actions = self.select_action(observations) # chooses action based on self.actor policy. select_action method is inherited from SACPolicy
+            next_observations, rewards, terminals, info = self.dynamics.step(observations, actions, wanted_uncertainty_measures=self._dynamic_rollout_uncertainty_measures)
 
-            rollout_transitions["obss"].append(observations)
-            rollout_transitions["next_obss"].append(next_observations)
-            rollout_transitions["actions"].append(actions)
-            rollout_transitions["rewards"].append(rewards)
-            rollout_transitions["terminals"].append(terminals)
+            mask = np.ones_like(rewards, dtype=bool).flatten() # init mask - determines which transitions and rollouts to keep
 
-            num_transitions += len(observations)
-            rewards_arr = np.append(rewards_arr, rewards.flatten())
+            if self._dynamic_rollout_uncertainty_measures:
+                uncertainty_measures = info["uncertainty_measures"] # dict
 
-            nonterm_mask = (~terminals).flatten()
-            if nonterm_mask.sum() == 0:
+                # mask for data below uncertainty threshold
+                if epoch >= self._start_filtering_epoch: # only start filtering after some epochs
+                    thresholds = self._dynamic_rollout_uncertainty_thresholds
+                else:
+                    thresholds = [None]*len(self._dynamic_rollout_uncertainty_measures)
+                for m, t in zip(self._dynamic_rollout_uncertainty_measures, thresholds):
+                    if t is not None and t:
+                        mask = mask & (uncertainty_measures[m] < t)
+
+            rollout_transitions["obss"].append(observations[mask])
+            rollout_transitions["next_obss"].append(next_observations[mask])
+            rollout_transitions["actions"].append(actions[mask])
+            rollout_transitions["rewards"].append(rewards[mask])
+            rollout_transitions["terminals"].append(terminals[mask])
+
+            if monitor_rollout: # just for monitoring purposes
+                rollout_monitor["obss"].append(observations[mask])
+                rollout_monitor["next_obss_predicted"].append(next_observations[mask])
+                rollout_monitor["actions"].append(actions[mask])
+                rollout_monitor["step_nr"].append(np.array([step]*len(observations[mask])))
+
+                if self._dynamic_rollout_uncertainty_measures:
+                    # add uncertainty measures to monitor - only keep masked values (that are used as synthetic data)
+                    uncertainty_modes = list(uncertainty_measures.keys())
+                    for uncertainty_mode in uncertainty_modes:
+                        rollout_monitor[uncertainty_mode].append(uncertainty_measures[uncertainty_mode][mask])
+
+            num_transitions += len(observations[mask])
+            rewards_arr = np.append(rewards_arr, rewards[mask].flatten())
+            num_unfiltered_transitions += len(observations)
+
+            mask = mask & (~terminals).flatten() # additionally mask for non-terminated trajectories
+            if mask.sum() == 0:
                 break
-
-            observations = next_observations[nonterm_mask]
+            observations = next_observations[mask]
         
-        for k, v in rollout_transitions.items():
+        for k, v in rollout_transitions.items(): # concatenate lists to np arrays
             rollout_transitions[k] = np.concatenate(v, axis=0)
 
-        return rollout_transitions, \
-            {"num_transitions": num_transitions, "reward_mean": rewards_arr.mean()}
-    
+        rollout_info = {"num_transitions": num_transitions, "reward_mean": rewards_arr.mean(), "dynamic_filtering_active": epoch >= self._start_filtering_epoch, "filter_acceptance_ratio": num_transitions / num_unfiltered_transitions if num_unfiltered_transitions > 0 else 0}
+
+        if monitor_rollout:
+            for k, v in rollout_monitor.items(): # concatenate lists to np arrays
+                    rollout_monitor[k] = np.concatenate(v, axis=0)
+
+            rollout_info["rollout_monitor"] = rollout_monitor
+
+        return rollout_transitions, rollout_info
+
+
     @ torch.no_grad()
     def compute_lcb(self, obss: torch.Tensor, actions: torch.Tensor):
         # compute next q std
@@ -168,7 +225,7 @@ class MOBILEPolicy(BasePolicy):
                 next_actions, next_log_probs = self.actforward(next_obss)
                 next_qs = torch.cat([critic_old(next_obss, next_actions) for critic_old in self.critics_old], 1)
                 next_q = torch.min(next_qs, 1)[0].reshape(-1, 1)
-                if not self._deteterministic_backup:
+                if not self._deterministic_backup:
                     next_q -= self._alpha * next_log_probs
             target_q = (rewards - self._penalty_coef * penalty) + self._gamma * (1 - terminals) * next_q
             target_q = torch.clamp(target_q, 0, None)
