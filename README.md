@@ -18,7 +18,7 @@ A performance comparison of COMBO and MOBILE models with and without filtering i
 The evaluated models are provided in [models](models).<br>
 Medium datasets from [D4RL](https://github.com/Farama-Foundation/d4rl.git) were used for training the models, since model-based algorithms provide the most benefit with these datasets, and there is also still the most room for improvement compared to larger datasets and/or datasets gathered by a better-performing rollout policy, as the [performance evaluation](https://github.com/yihaosun1124/OfflineRL-Kit) by Sun et al. shows.<br>
 
-For beginners to learn about reinforcement learning, offline rl, model-based RL etc., I recommend the course [Deep Reinforcement Learning (CS 285)](https://rail.eecs.berkeley.edu/deeprlcourse/) at UC Berkeley by Sergey Levine.<br>
+For beginners to learn about reinforcement learning, offline RL, model-based RL etc., I recommend the course [Deep Reinforcement Learning (CS 285)](https://rail.eecs.berkeley.edu/deeprlcourse/) at UC Berkeley by Sergey Levine.<br>
 An introduction to offline RL is given in [this paper](https://arxiv.org/pdf/2005.01643) by Levine et al.
 
 ## Supported model-based orl algorithms
